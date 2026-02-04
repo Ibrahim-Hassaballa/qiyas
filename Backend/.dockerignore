@@ -1,0 +1,33 @@
+# Dependencies
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+.pytest_cache/
+*.egg-info/
+.eggs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+
+# Tests (already have in container)
+tests/
+
+# Misc
+.git/
+*.md
