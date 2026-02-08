@@ -3,8 +3,8 @@ version: '3.8'
 services:
   backend:
     build:
-      context: ./Backend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: Backend/Dockerfile
     container_name: qiyasai-backend
     restart: unless-stopped
     ports:

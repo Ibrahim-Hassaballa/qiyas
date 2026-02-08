@@ -17,7 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
-COPY requirements.docker.txt .
+# Copy requirements (from Backend folder relative to context root)
+COPY Backend/requirements.docker.txt .
 RUN pip install --user -r requirements.docker.txt
 
 
@@ -49,9 +50,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /root/.local /root/.local
 # COPY Source/ ./Backend/Source/
 # COPY Data/ ./Backend/Data/
-# Copy ALL application source code
-COPY . ./Backend/
-# Seed the expected Data location for standalone usage (no volume)
+# Copy Backend folder content to /app/Backend
+COPY Backend/ ./Backend/
+# Copy root Data folder (containing Raw files) to /app/Data
 COPY Data/ /app/Data/
 
 # Create directories for logs and data persistence
