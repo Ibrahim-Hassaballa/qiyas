@@ -14,7 +14,7 @@ import ChatSidebar from '../Components/ChatSidebar';
 const ChatPage = () => {
     // 1. Hooks & Auth
     const { messages, setMessages, isLoading, sendMessage, isMemoryEnabled, toggleMemory, retryLastMessage } = useChat();
-    const { logout, user } = useAuth();
+    const { logout, user, csrfToken } = useAuth();
 
     // 2. UI State
     const [input, setInput] = useState('');
@@ -181,7 +181,12 @@ const ChatPage = () => {
         const formData = new FormData();
         formData.append('file', file);
         try {
-            await api.post('/controls/controls/upload', formData);
+            await api.post('/controls/controls/upload', formData, {
+                headers: {
+                    'Content-Type': undefined,  // Let axios set multipart/form-data with boundary
+                    'X-CSRF-Token': csrfToken   // Explicitly include CSRF token
+                }
+            });
             fetchControls();
         } catch (err) {
             alert("Upload failed");

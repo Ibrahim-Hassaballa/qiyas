@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from slowapi.errors import RateLimitExceeded
 import uuid
 import time
@@ -114,6 +115,36 @@ async def qiyasai_exception_handler(request: Request, exc: QiyasAIException):
             "error": exc.__class__.__name__,
             "message": exc.message,
             "details": exc.details
+        }
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle FastAPI validation errors (422) and log details"""
+    error_details = []
+    for error in exc.errors():
+        error_details.append({
+            "loc": error.get("loc"),
+            "msg": error.get("msg"),
+            "type": error.get("type")
+        })
+    
+    logger.error(
+        f"Validation error: {len(error_details)} validation issue(s)",
+        extra={
+            "request_id": getattr(request.state, 'request_id', 'unknown'),
+            "path": request.url.path,
+            "errors": error_details
+        }
+    )
+    
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "error": "ValidationError",
+            "message": "Request validation failed",
+            "details": error_details
         }
     )
 
