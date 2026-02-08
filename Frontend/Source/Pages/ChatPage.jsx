@@ -152,6 +152,10 @@ const ChatPage = () => {
         }
     };
 
+    useEffect(() => {
+        fetchControls();
+    }, []);
+
     const fetchSettings = async () => {
         try {
             const res = await api.get('/settings');
@@ -218,6 +222,7 @@ const ChatPage = () => {
                 onNewChat={handleNewChat}
                 activeConversationId={activeConversationId}
                 refreshTrigger={refreshSidebar}
+                controls={controls}
             />
 
             {/* 2. Main Chat Area */}

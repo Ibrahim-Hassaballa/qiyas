@@ -1,4 +1,5 @@
 import os
+import asyncio
 from pathlib import Path
 from Backend.Source.Services.DocumentService import DocumentService
 from Backend.Source.Services.KnowledgeBaseService import get_kb_service
@@ -98,6 +99,8 @@ class IngestionService:
                 try:
                     get_kb_service().add_documents(documents=batch_chunks, ids=batch_ids, metadatas=batch_metas)
                     logger.debug(f"Ingested batch {i} to {i+len(batch_chunks)} from {file_path.name}")
+                    # Yield control to event loop to allow health checks to pass
+                    await asyncio.sleep(0.05)
                 except Exception as e:
                     logger.error(f"Error ingesting batch {i} from {file_path.name}: {e}", exc_info=True)
                     continue # Skip this batch and continue
@@ -118,5 +121,66 @@ class IngestionService:
         except Exception as e:
             logger.error(f"Error deleting {filename} from knowledge base: {e}")
             return False
+
+    @staticmethod
+    def is_file_ingested(filename: str) -> bool:
+        """
+        Check if a file has already been ingested into the knowledge base.
+        """
+        try:
+            results = get_kb_service().collection.get(where={"source": filename}, limit=1)
+            return len(results.get("ids", [])) > 0
+        except Exception as e:
+            logger.error(f"Error checking if {filename} is ingested: {e}")
+            return False
+
+    @staticmethod
+    async def auto_ingest_existing_files():
+        """
+        Automatically ingest all files from the Raw data folder that haven't been ingested yet.
+        Called on application startup.
+        """
+        # Normalize path separators for cross-platform compatibility
+        chroma_path = settings.CHROMA_DB_PATH.replace("\\", "/")
+        raw_path = Path(chroma_path).parent / "Raw"
+        
+        if not raw_path.exists():
+            logger.info(f"Raw data folder does not exist: {raw_path}")
+            return
+        
+        # Get all files (excluding temp files starting with ~)
+        files = [f for f in raw_path.iterdir() if f.is_file() and not f.name.startswith("~")]
+        
+        if not files:
+            logger.info("No files found in Raw data folder to auto-ingest")
+            return
+        
+        logger.info(f"Found {len(files)} files in Raw data folder. Checking for unprocessed files...")
+        
+        ingested_count = 0
+        skipped_count = 0
+        
+        for file_path in files:
+            try:
+                # Check if already ingested
+                if IngestionService.is_file_ingested(file_path.name):
+                    logger.debug(f"Skipping already ingested file: {file_path.name}")
+                    skipped_count += 1
+                    continue
+                
+                logger.info(f"Auto-ingesting file: {file_path.name}")
+                success, msg = await IngestionService.ingest_file(file_path)
+                
+                if success:
+                    ingested_count += 1
+                    logger.info(f"Successfully auto-ingested: {file_path.name}")
+                else:
+                    logger.warning(f"Failed to auto-ingest {file_path.name}: {msg}")
+                    
+            except Exception as e:
+                logger.error(f"Error auto-ingesting {file_path.name}: {e}")
+        
+        logger.info(f"Auto-ingestion complete. Ingested: {ingested_count}, Skipped (already ingested): {skipped_count}")
+
 
 ingestion_service = IngestionService()

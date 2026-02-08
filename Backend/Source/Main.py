@@ -5,6 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from slowapi.errors import RateLimitExceeded
 import uuid
 import time
+import asyncio
 from Backend.Source.Core.Config.Config import settings
 from Backend.Source.Core.Logging import logger
 from Backend.Source.Core.Exceptions import QiyasAIException
@@ -14,6 +15,7 @@ from Backend.Source.Api.Routes import Chat, Controls, Settings, Auth, History
 from Backend.Source.Core.Database import engine, Base
 from Backend.Source.Services.AuthService import auth_service
 from Backend.Source.Core.Database import SessionLocal
+from Backend.Source.Services.IngestionService import IngestionService
 
 # Validate configuration at startup (fail fast with clear errors)
 validate_config(settings)
@@ -33,6 +35,20 @@ app = FastAPI(
     description="Backend for QiyasAI Copilot using Azure OpenAI",
     version="1.0.0"
 )
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Auto-ingest existing files from Data/Raw folder on startup (background task)"""
+    logger.info("Function startup_event called")
+    # Run in background so we don't block server startup
+    asyncio.create_task(run_auto_ingest())
+
+async def run_auto_ingest():
+    """Wrapper to run auto-ingest with logging"""
+    logger.info("Starting auto-ingestion background task...")
+    await IngestionService.auto_ingest_existing_files()
+    logger.info("Auto-ingestion background task complete")
 
 # Add rate limiter state
 app.state.limiter = limiter

@@ -13,7 +13,10 @@ from Backend.Source.Utils.CSRF import verify_csrf
 
 router = APIRouter()
 
-RAW_DATA_PATH = Path(settings.CHROMA_DB_PATH).parent / "Raw"
+# Normalize path for cross-platform compatibility (Docker/Linux)
+chroma_path_str = settings.CHROMA_DB_PATH.replace("\\", "/")
+RAW_DATA_PATH = Path(chroma_path_str).parent / "Raw"
+
 if not RAW_DATA_PATH.exists():
     RAW_DATA_PATH.mkdir(parents=True, exist_ok=True)
 

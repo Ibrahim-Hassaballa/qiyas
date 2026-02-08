@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
+import { FileText } from 'lucide-react';
 import { useAuth } from '../Context/AuthContext';
 import api from '../Services/api';
 
 import DeleteConfirmModal from './DeleteConfirmModal';
 
-const ChatSidebar = ({ onSelectConversation, onNewChat, activeConversationId, refreshTrigger }) => {
+const ChatSidebar = ({ onSelectConversation, onNewChat, activeConversationId, refreshTrigger, controls = [] }) => {
     const { user, logout } = useAuth();
     const [conversations, setConversations] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -104,6 +105,28 @@ const ChatSidebar = ({ onSelectConversation, onNewChat, activeConversationId, re
                         </div>
                     ))
                 )}
+            </div>
+
+            {/* Knowledge Base Section */}
+            <div className="p-4 border-t border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 border-b">
+                <h3 className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <FileText size={14} className="text-blue-500" />
+                    Knowledge Base
+                </h3>
+                <div className="max-h-40 overflow-y-auto space-y-1 custom-scrollbar pr-1">
+                    {controls.length === 0 ? (
+                        <p className="text-xs text-gray-400 italic pl-1">No files connected</p>
+                    ) : (
+                        controls.map((file, i) => (
+                            <div key={i} className="group relative flex items-center gap-2 p-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors" title={file}>
+                                <FileText size={13} className="text-gray-400 shrink-0" />
+                                <span className="text-xs text-gray-600 dark:text-gray-300 truncate w-full">
+                                    {file}
+                                </span>
+                            </div>
+                        ))
+                    )}
+                </div>
             </div>
 
             <DeleteConfirmModal
