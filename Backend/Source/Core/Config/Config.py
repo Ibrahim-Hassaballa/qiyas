@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
@@ -22,6 +23,11 @@ class Settings(BaseSettings):
 
     # Vector DB Path
     CHROMA_DB_PATH: str
+
+    @field_validator("CHROMA_DB_PATH")
+    @classmethod
+    def normalize_path(cls, v: str) -> str:
+        return v.replace("\\", "/")
 
     # Security Settings (REQUIRED - no defaults)
     SECRET_KEY: str  # Must be set in .env - no fallback!
