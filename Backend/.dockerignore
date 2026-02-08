@@ -1,4 +1,4 @@
-# Dependencies
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -11,23 +11,51 @@ ENV/
 *.egg-info/
 .eggs/
 
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+*.egg
+
 # IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Environment files
+# Git
+.git/
+.gitignore
+
+# Environment files (will be mounted at runtime)
 .env
 .env.local
+.env.*.local
 
 # Logs
 logs/
 *.log
 
-# Tests (already have in container)
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
 tests/
+*.test.js
+*.spec.js
+
+# Documentation
+*.md
+!README.md
 
 # Misc
-.git/
-*.md
+.claude/
+.gemini/
+cookie.txt
+headers.txt

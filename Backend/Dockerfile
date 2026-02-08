@@ -47,10 +47,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy Python packages from builder
 COPY --from=builder /root/.local /root/.local
-
-# Copy application source code
-COPY Source/ ./Backend/Source/
-COPY Data/ ./Backend/Data/
+# COPY Source/ ./Backend/Source/
+# COPY Data/ ./Backend/Data/
+# Copy ALL application source code
+COPY . ./Backend/
+# Seed the expected Data location for standalone usage (no volume)
+COPY Data/ /app/Data/
 
 # Create directories for logs and data persistence
 RUN mkdir -p /app/logs /app/Data/KnowledgeBase /app/Backend/Data
