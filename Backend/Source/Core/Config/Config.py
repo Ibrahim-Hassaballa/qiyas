@@ -17,12 +17,22 @@ class Settings(BaseSettings):
     AZURE_EMBEDDING_DEPLOYMENT: str
     AZURE_EMBEDDING_API_VERSION: str
 
+    # Groq Settings (Optional - enables Groq as an alternative LLM provider)
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
+
     # App Settings
     HOST: str
     PORT: int
 
     # Vector DB Path
     CHROMA_DB_PATH: str
+
+    # Database (PostgreSQL)
+    DATABASE_URL: str = "postgresql://qiyas:QiyasAI_2025!@localhost:5432/qiyasai"
+
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379/0"
 
     @field_validator("CHROMA_DB_PATH")
     @classmethod
@@ -33,6 +43,10 @@ class Settings(BaseSettings):
     SECRET_KEY: str  # Must be set in .env - no fallback!
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # 24 hours
+
+    # Token Limits
+    DEFAULT_TOKEN_LIMIT: int = 500000
+    DEFAULT_COST_LIMIT: float = 5.0
 
     # Rate Limiting
     RATE_LIMIT_ENABLED: bool = True

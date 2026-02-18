@@ -4,455 +4,235 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-QiyasAI Copilot is an AI-powered document analysis and conversational assistant that combines RAG (Retrieval-Augmented Generation) with Azure OpenAI. The application allows users to upload documents, ask questions, and get AI-powered responses grounded in both a permanent knowledge base and session-specific document uploads.
-
-## Architecture
-
-### Backend (Python/FastAPI)
-- **Location**: `Backend/Source/`
-- **Framework**: FastAPI with Uvicorn server
-- **Port**: 8000 (configured in `Backend/.env`)
-- **Entry Point**: `Backend.Source.Main:app`
-
-#### Key Components
-- **API Routes** (`Backend/Source/Api/Routes/`):
-  - `Auth.py` - User authentication (login, register, token refresh)
-  - `Chat.py` - Streaming chat endpoint with RAG integration
-  - `Controls.py` - Document ingestion controls
-  - `History.py` - Chat history CRUD operations
-  - `Settings.py` - User settings management
-
-- **Services** (`Backend/Source/Services/`):
-  - `AIService.py` - Azure OpenAI client wrapper (chat + embeddings)
-  - `KnowledgeBaseService.py` - ChromaDB vector store manager with dual collections
-  - `IngestionService.py` - Document processing (PDF, DOCX, Excel, images with OCR)
-  - `AuthService.py` - User authentication and JWT token management
-  - `ChatHistoryService.py` - Conversation persistence
-  - `DocumentService.py` - File upload handling
-
-- **Core** (`Backend/Source/Core/`):
-  - `Config/Config.py` - Pydantic settings loading from `Backend/.env`
-  - `Database.py` - SQLAlchemy setup with SQLite (`Backend/Data/qiyas.db`)
-  - `Security.py` - Password hashing (bcrypt) and JWT token creation
-  - `Logging.py` - Structured logging with JSON and text formatters
-  - `Exceptions.py` - Custom exception hierarchy for error handling
-
-- **Middleware** (`Backend/Source/Middleware/`):
-  - `RateLimiting.py` - Request rate limiting using slowapi
-
-- **Utilities** (`Backend/Source/Utils/`):
-  - `FileValidator.py` - Multi-layer file upload validation
-  - `CSRF.py` - CSRF token generation and validation
-
-### Frontend (React/Vite)
-- **Location**: `Frontend/Source/`
-- **Framework**: React 19 + Vite
-- **Styling**: Tailwind CSS v4
-- **Port**: 5173 (Vite default, proxies `/api` to backend:8000)
-
-#### Key Components
-- **Pages**:
-  - `LoginPage.jsx` / `RegisterPage.jsx` - Authentication UI
-  - `ChatPage.jsx` - Main chat interface with sidebar
-
-- **Components**:
-  - `ChatBubble.jsx` - Message rendering (supports markdown with react-markdown)
-  - `ChatHeader.jsx` - Top bar with settings button
-  - `ChatSidebar.jsx` - Conversation history list
-  - `MessageInput.jsx` - Input field with file upload
-  - `SettingsModal.jsx` - User preferences
-  - `DeleteConfirmModal.jsx` - Conversation deletion confirmation
-
-- **Context**:
-  - `AuthContext.jsx` - Global auth state (JWT in httpOnly cookies, CSRF protection)
-
-### Vector Database (ChromaDB)
-- **Two Collections**:
-  1. **`dga_qiyas_controls`** - Permanent knowledge base (ingested via `Scripts/ingest_documents.py`)
-  2. **`SessionKnowledgeBase`** - Per-conversation document uploads (deleted when conversation is deleted)
-- **Location**: Configured via `CHROMA_DB_PATH` in `.env` (typically `Data/KnowledgeBase/`)
-- **Embedding Function**: Custom Azure OpenAI embeddings using `text-embedding-ada-002`
-
-### Data Flow
-```
-User Message → Frontend (ChatPage)
-            ↓
-    POST /api/chat (streaming SSE)
-            ↓
-    Query SessionKnowledgeBase (conversation-specific docs)
-            ↓
-    Query dga_qiyas_controls (permanent knowledge base)
-            ↓
-    Build context from retrieved chunks
-            ↓
-    Azure OpenAI Chat Completion (streaming)
-            ↓
-    Stream response back to Frontend
-            ↓
-    Save to ChatHistory (SQLite)
-```
-
-## Security Features
-
-### Authentication & Authorization
-
-**Cookie-Based JWT Authentication**:
-- JWTs stored in **httpOnly cookies** (not localStorage) - prevents XSS attacks
-- Cookie attributes: `httpOnly=true`, `secure=true` (production), `samesite=lax`
-- Token expiry: 24 hours (configurable via `ACCESS_TOKEN_EXPIRE_MINUTES`)
-- Automatic logout on 401 responses via axios interceptor
-
-**CSRF Protection**:
-- CSRF tokens generated server-side using cryptographically secure random values
-- Tokens validated on all non-GET requests via `X-CSRF-Token` header
-- 1-hour token expiry with automatic cleanup
-- Frontend automatically attaches CSRF token to all state-changing requests
-
-**Authentication Flow**:
-1. User logs in via `/api/auth/token` (rate limited: 5/minute)
-2. Backend validates credentials and creates JWT
-3. JWT set in httpOnly cookie via `Set-Cookie` header
-4. CSRF token returned in response body
-5. Frontend stores CSRF token in state and attaches to requests
-6. Protected endpoints validate both cookie JWT and CSRF token
-
-**Default User**:
-- Username: `Qiyas`
-- Password: `1208` (should be changed in production)
-- Created automatically on first startup
-
-### Rate Limiting
-
-Rate limits prevent brute force attacks and API abuse:
-- **Authentication endpoints** (`/api/auth/token`, `/api/auth/register`): 5 requests/minute
-- **Chat endpoint** (`/api/chat`): 20 requests/minute
-- **File upload endpoint** (`/api/controls/upload`): 10 requests/minute
-- Identifier: IP address + user ID (for authenticated requests)
-- Storage: In-memory (use Redis in production)
-- Response: 429 Too Many Requests with `Retry-After` header
-
-**Configuration**:
-```env
-RATE_LIMIT_ENABLED=true
-RATE_LIMIT_AUTH=5/minute
-RATE_LIMIT_CHAT=20/minute
-RATE_LIMIT_UPLOAD=10/minute
-```
-
-### File Upload Security
-
-**Multi-Layer Validation** (via `FileValidator.py`):
-1. **Filename Sanitization**: Removes path traversal attempts (`../`, `..\\`), null bytes
-2. **Extension Whitelist**: Only allows `.pdf`, `.docx`, `.doc`, `.xlsx`, `.xls`, `.txt`, `.png`, `.jpg`, `.jpeg`
-3. **File Size Limits**:
-   - General uploads (controls): 50MB (`MAX_FILE_SIZE_GENERAL`)
-   - Chat attachments: 25MB (`MAX_FILE_SIZE_CHAT`)
-4. **MIME Type Validation**: Uses `python-magic` to verify actual file content (prevents `.exe` → `.pdf` spoofing)
-
-**File Processing Security**:
-- All file operations use sanitized filenames
-- Uploaded files validated before saving to disk
-- Failed ingestion triggers automatic file deletion
-- All operations logged with user ID for audit trail
-
-### Structured Logging
-
-**Log Formats**:
-- **JSON format** (production): Machine-readable structured logs with timestamps, levels, context
-- **Text format** (development): Human-readable colored console output
-
-**Log Levels**:
-- `DEBUG`: Detailed diagnostic information (RAG queries, chunk counts, etc.)
-- `INFO`: General informational messages (startup, user actions)
-- `WARNING`: Potentially problematic situations (validation failures, fallbacks)
-- `ERROR`: Error events with full stack traces
-
-**Log Rotation**:
-- File: `logs/qiyasai.log`
-- Rotation: 10MB per file, 5 backup files
-- Encoding: UTF-8
-
-**Logged Information**:
-- All HTTP requests with UUID `request_id`, duration, status code, IP address
-- Authentication attempts (success/failure) with username
-- File uploads with size, filename, user ID
-- Errors with full stack traces via `exc_info=True`
-- Rate limit violations with IP and endpoint
-
-### Error Handling
-
-**Custom Exception Hierarchy** (`Backend/Source/Core/Exceptions.py`):
-- `QiyasAIException` - Base exception with status code and details
-- `AuthenticationError` (401) - Invalid credentials, missing token
-- `AuthorizationError` (403) - Insufficient permissions
-- `ValidationError` (400) - Invalid input, file validation failures
-- `FileProcessingError` (422) - Document extraction errors
-- `RateLimitExceeded` (429) - Too many requests
-- `ResourceNotFoundError` (404) - Resource not found
-
-**Global Exception Handlers**:
-- All custom exceptions return structured JSON responses
-- Unexpected exceptions logged with full context (request ID, path, user)
-- Error responses include error type, message, and request ID for tracking
-
-### CORS Policy
-
-**Strict Origin Control**:
-- No wildcard origins (`*`) - only specific allowed origins
-- Configured via `CORS_ORIGINS` (comma-separated list)
-- Default: `http://localhost:5173,http://127.0.0.1:5173`
-- Credentials allowed: `allow_credentials=true` (required for cookies)
-
-### Middleware Stack
-
-**Request Logging Middleware**:
-- Generates UUID for each request (`X-Request-ID` header)
-- Logs request start with method, path, IP
-- Measures request duration
-- Logs completion with status code and duration
-- Attaches request ID to response headers
-
-**Rate Limiting Middleware**:
-- Applied per-route via `@limiter.limit()` decorator
-- Uses fixed-window strategy
-- Custom identifier function (IP + user ID)
-- Rate limit state stored in `app.state.limiter`
-
-### Secret Management
-
-**Required Secrets** (never hardcoded):
-- `SECRET_KEY`: JWT signing key (32+ bytes, cryptographically random)
-- Generate: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
-- Application **fails to start** if `SECRET_KEY` not in `.env`
-
-**Azure OpenAI Keys**:
-- Separate keys for chat and embeddings
-- Loaded from environment variables only
-- Never logged or exposed in error messages
-
-### Security Best Practices
-
-**For Development**:
-- Use `.env` file with `COOKIE_SECURE=false` (HTTP allowed)
-- Keep default CORS origins (localhost)
-- Log level: `DEBUG` or `INFO`
-
-**For Production**:
-- Set `COOKIE_SECURE=true` (HTTPS only)
-- Use specific domain in `COOKIE_DOMAIN`
-- Update `CORS_ORIGINS` to production domain
-- Set `LOG_LEVEL=WARNING` or `ERROR`
-- Use Redis for rate limiting: `storage_uri="redis://localhost:6379"`
-- Change default user password
-- Enable firewall/IP whitelisting
-- Set up log aggregation (ELK, Datadog, etc.)
-- Regular security scans (OWASP ZAP, etc.)
+QiyasAI Copilot is a multi-tenant AI-powered document analysis and conversational assistant. It combines RAG (Retrieval-Augmented Generation) with Azure OpenAI (and optionally Groq), allowing organizations to upload documents, ask questions, and get AI-powered responses grounded in both a permanent knowledge base and session-specific uploads. The system supports multiple tenants (organizations), role-based access control, i18n (English/Arabic with RTL), dark/light theming, and an admin dashboard.
 
 ## Development Commands
 
-### Running the Application
+### Running Locally (Windows)
 
-**Start Both Frontend and Backend (Windows)**:
 ```powershell
+# Start both frontend and backend
 .\run.ps1
-```
-This opens two PowerShell windows: one for backend, one for frontend.
 
-**Backend Only**:
-```bash
-# Activate virtual environment first
-.\.venv\Scripts\activate  # Windows
-source .venv/bin/activate  # Linux/Mac
-
-# Install dependencies
+# Backend only (requires .venv activated)
+.\.venv\Scripts\activate
 pip install -r Backend/requirements.txt
-
-# Run server with hot reload
 python -m Backend.Source.Main
-```
 
-**Frontend Only**:
-```bash
+# Frontend only
 cd Frontend
 npm install
 npm run dev
 ```
 
-### Building and Linting
+### Docker Deployment
 
-**Frontend**:
 ```bash
-cd Frontend
-npm run build    # Production build → Frontend/dist/
-npm run lint     # ESLint check
-npm run preview  # Preview production build
+docker compose up --build        # Start all services (PostgreSQL, Redis, Backend, Frontend)
+docker compose down              # Stop all services
+docker compose logs backend -f   # Tail backend logs
 ```
 
-**Backend**:
-No build step required for Python. For linting/formatting, install tools manually (not in requirements.txt):
+Docker stack: PostgreSQL 16 + Redis 7 + Backend (port 8000) + Frontend (port 80). Backend waits for healthy DB and Redis before starting.
+
+### Build & Lint
+
 ```bash
-pip install ruff  # or black, flake8, etc.
+# Frontend
+cd Frontend && npm run build     # Production build -> Frontend/dist/
+cd Frontend && npm run lint      # ESLint
+
+# Backend
+pip install ruff
 ruff check Backend/
 ```
 
-### Knowledge Base Management
+### Tests
 
-**Ingest Documents to Permanent Knowledge Base**:
 ```bash
-# Place files in Data/Raw/ (PDF, DOCX, XLSX, PNG/JPG)
+# Backend (pytest + pytest-asyncio)
+cd Backend && python -m pytest tests/ -v
+cd Backend && python -m pytest tests/unit/ -v           # Unit tests only
+cd Backend && python -m pytest tests/integration/ -v    # Integration tests only
+cd Backend && python -m pytest tests/unit/services/test_chat_history_service.py -v  # Single file
+
+# Frontend (vitest + @testing-library/react)
+cd Frontend && npm test              # Run all tests
+cd Frontend && npm test -- --run     # Run once (no watch)
+cd Frontend && npx vitest run Source/__tests__/translations.test.jsx  # Single file
+```
+
+**Note:** Backend integration tests are currently stale — they reference old default admin credentials and missing endpoints. Unit tests for services may also need `tenant_id` parameters added after the multi-tenant refactor.
+
+### Knowledge Base Ingestion
+
+```bash
+# Place files in Data/Raw/ then run:
 python Scripts/ingest_documents.py
 ```
-This processes all files in `Data/Raw/` and adds them to the `dga_qiyas_controls` ChromaDB collection.
 
-**Note**: Session uploads (via chat interface) go to `SessionKnowledgeBase` and are tied to a conversation ID.
+## Architecture
+
+**Backend**: Python/FastAPI (port 8000), entry point `Backend.Source.Main:app`
+**Frontend**: React 19 + Vite (port 5173 dev, proxies `/api` to backend), Tailwind CSS v4
+**Database**: PostgreSQL in production, SQLite for local dev (`Backend/Data/qiyas.db`)
+**Vector DB**: ChromaDB with Azure OpenAI embeddings (`text-embedding-ada-002`)
+**Cache/Rate Limiting**: Redis intended for production, but currently in-memory everywhere (see Known Limitations)
+**AI Providers**: Azure OpenAI (primary) + Groq (optional, configurable per-tenant in settings)
+
+### Multi-Tenancy Model
+
+The system uses **row-level tenant isolation** (not schema separation):
+
+- **Tenant** -> has many **Users** -> each has many **Conversations** -> each has many **Messages**
+- Every Conversation is scoped by `tenant_id` + `user_id`
+- Registration creates a Tenant (organization) + an Owner user in one transaction
+- Tenant has a `plan` field (`free`, `pro`, `enterprise`) and a URL-safe `slug`
+- ChromaDB collections are per-tenant: `tenant_{id[:8]}_standards` and `tenant_{id[:8]}_sessions`
+- Tenant document uploads stored in `Data/Tenants/{tenant_id}/Raw/`
+
+### Role-Based Access Control (RBAC)
+
+Three roles enforced via `require_role()` dependency in `Backend/Source/Core/Dependencies.py`:
+
+| Role | Chat | Own Data | Admin Dashboard | Manage Users/Tenants |
+|------|------|----------|-----------------|---------------------|
+| **member** | Yes | Yes | No | No |
+| **admin** | Yes | Yes | Yes | Yes |
+| **owner** | Yes | Yes | Yes | Yes (created on registration) |
+
+Frontend guards: `AdminRoute.jsx` redirects non-admin/owner users away from `/admin`.
+
+### Authentication Flow
+
+1. User logs in with **email** (not username) via `POST /api/auth/token`
+2. JWT set in **httpOnly cookie** (not localStorage); CSRF token returned in response body
+3. Frontend stores CSRF token in React state, attaches via `X-CSRF-Token` header on non-GET requests
+4. Axios interceptor auto-logouts on 401; `withCredentials: true` for all requests
+5. JWT payload includes: `sub` (email), `tenant_id`, `role`, `user_id`
+
+**Default admin** (created on first startup via `AuthService.create_default_admin_if_not_exists()`): email `admin@qiyas.ai`, username `Admin`, password `QiyasAdmin2025!`, role `owner`.
+
+### RAG Data Flow
+
+```
+User Message -> POST /api/chat (streaming SSE)
+  -> Optional Groq topic guard (if configured in tenant settings)
+  -> File extraction + session KB ingestion + AI document classification (if attachment)
+  -> Query tenant ChromaDB (hybrid search: semantic + lexical via RRF merge)
+  -> Query dga_qiyas_controls (permanent/shared global collection)
+  -> Build context from retrieved chunks
+  -> Azure OpenAI or Groq Chat Completion (streaming)
+  -> Stream response via SSE -> Save to ChatHistory
+  -> Update user token/cost usage counters
+```
+
+**Three ChromaDB collection types**:
+1. `dga_qiyas_controls` — permanent, shared across all tenants (ingested via script)
+2. `tenant_{id[:8]}_standards` — per-tenant permanent knowledge base
+3. `tenant_{id[:8]}_sessions` — per-conversation uploads, filtered by `conversation_id` metadata, deleted when conversation is deleted
+
+### Key Backend Patterns
+
+- **Config**: Pydantic settings from `Backend/.env` (`Backend/Source/Core/Config/Config.py`). App **refuses to start** without `SECRET_KEY` and Azure credentials (validated in `Config/Validator.py`).
+- **Dependencies**: `get_current_user_from_cookie` (defined in `Auth.py`, re-exported as `get_current_user`), `get_current_tenant` for tenant context, `require_role()` for RBAC — latter two in `Dependencies.py`
+- **Services layer**: Business logic in `Backend/Source/Services/`, routes are thin wrappers. All services use module-level singletons (e.g., `auth_service = AuthService()`).
+- **DB sessions**: Mixed pattern — `ChatHistoryService` and `SettingsService` create their own `SessionLocal()` sessions internally; other services receive sessions via FastAPI `Depends(get_db)`.
+- **Exception hierarchy**: Custom exceptions in `Core/Exceptions.py` with global handlers returning structured JSON
+- **Rate limiting**: Per-route via `@limiter.limit()` decorator (5/min auth, 20/min chat, 10/min upload)
+- **Migrations**: Hand-rolled idempotent column additions in `Database.py` (Alembic is in requirements but not used)
+- **Logging**: Structured JSON logging with `RotatingFileHandler` (10MB, 5 backups) in `Core/Logging.py`
+
+### API Route Prefixes
+
+| Prefix | File | Purpose |
+|--------|------|---------|
+| `/api/auth` | `Auth.py` | Login, register, logout, /me, CSRF |
+| `/api/chat` | `Chat.py` | Streaming chat with RAG |
+| `/api/controls` | `Controls.py` | Document list/upload/delete |
+| `/api/history` | `History.py` | Conversation CRUD |
+| `/api/settings` | `Settings.py` | Tenant settings get/post |
+| `/api/admin` | `Admin.py` | Tenant/user management, analytics, health, logs |
+
+### Frontend Structure
+
+- **Pages**: `LoginPage`, `RegisterPage`, `ChatPage`, `AdminPage`
+- **Context providers** (outermost first in `App.jsx`): `LocaleProvider` -> `ThemeProvider` -> `AuthProvider` -> `ToastProvider` -> `Router`
+- **Auth**: `AuthContext.jsx` provides `useAuth()` hook; handles JWT cookies + CSRF transparently via axios interceptors
+- **i18n**: `LocaleContext.jsx` wraps i18next with `en` and `ar` locales. Sets `dir="rtl"` for Arabic. Translation files in `Frontend/Source/i18n/en.json` and `ar.json`. Provides `t()`, `formatNumber()`, `formatDate()`.
+- **Theme**: `ThemeContext.jsx` provides dark/light toggle, persisted in `localStorage`
+- **Toast**: `Toast.jsx` provides toast notification context and component
+- **Chat hook**: `useChat.js` manages conversation state, streaming SSE (uses `fetch`, not axios), file uploads, retry logic
+- **Admin dashboard**: Tabs split into `Components/Admin/` — OverviewTab, TenantsTab, UsersTab, HealthTab, LogsTab, SettingsTab, plus modals
+- **API client**: `Services/api.js` — axios instance with `baseURL: '/api'`, `withCredentials: true`
+
+### AI Service Architecture
+
+`AIService.py` provides two AI backends via `get_ai_service(provider)` factory:
+
+- **AzureOpenAIService** — `AsyncAzureOpenAI` for chat streaming + synchronous `AzureOpenAI` for embeddings. Includes 3-tier document classification: (1) filename regex, (2) cosine similarity against pre-embedded standard descriptions, (3) LLM fallback.
+- **GroqAIService** — `AsyncGroq` client, lazy-initialized singleton. Used when tenant settings set `model_provider: "groq"`.
+
+Both expose `get_chat_response()` returning an async streaming generator.
 
 ## Environment Configuration
 
-**Backend requires `Backend/.env` with**:
+Backend requires `Backend/.env`. See `Backend/.env.example` for template. Critical variables:
 
-See `Backend/.env.example` for a complete template.
-
-**Required Variables**:
 ```env
-# Security (REQUIRED - generate with: python -c "import secrets; print(secrets.token_urlsafe(32))")
-SECRET_KEY=your_generated_secret_key_here
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=1440
+# REQUIRED - app won't start without this
+SECRET_KEY=<generate: python -c "import secrets; print(secrets.token_urlsafe(32))">
 
-# Azure OpenAI Chat
-AZURE_CHAT_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_CHAT_KEY=your_key
-AZURE_CHAT_DEPLOYMENT=your_gpt4_deployment_name
-AZURE_CHAT_API_VERSION=2024-02-15-preview
+# Database (PostgreSQL for production, omit for SQLite dev)
+DATABASE_URL=postgresql://qiyas:password@localhost:5432/qiyasai
 
-# Azure OpenAI Embeddings
-AZURE_EMBEDDING_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_EMBEDDING_KEY=your_key
+# Redis (required for production rate limiting)
+REDIS_URL=redis://localhost:6379/0
+
+# Azure OpenAI (both chat and embeddings endpoints required)
+AZURE_CHAT_ENDPOINT=...
+AZURE_CHAT_KEY=...
+AZURE_CHAT_DEPLOYMENT=...
+AZURE_EMBEDDING_ENDPOINT=...
+AZURE_EMBEDDING_KEY=...
 AZURE_EMBEDDING_DEPLOYMENT=text-embedding-ada-002
-AZURE_EMBEDDING_API_VERSION=2023-05-15
 
-# Server
-HOST=127.0.0.1
-PORT=8000
+# Optional: Groq (enables alternative AI provider)
+GROQ_API_KEY=...
 
-# ChromaDB
-CHROMA_DB_PATH=Data/KnowledgeBase
-
-# CORS (comma-separated origins)
+# CORS (must include frontend origin)
 CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
-
-# Rate Limiting
-RATE_LIMIT_ENABLED=true
-RATE_LIMIT_AUTH=5/minute
-RATE_LIMIT_CHAT=20/minute
-RATE_LIMIT_UPLOAD=10/minute
-
-# File Upload Limits (bytes)
-MAX_FILE_SIZE_GENERAL=52428800  # 50MB
-MAX_FILE_SIZE_CHAT=26214400     # 25MB
-ALLOWED_FILE_EXTENSIONS=.pdf,.docx,.doc,.xlsx,.xls,.txt,.png,.jpg,.jpeg
-
-# Cookie Settings
-COOKIE_SECURE=false  # Set to true in production (requires HTTPS)
-COOKIE_SAMESITE=lax
-COOKIE_DOMAIN=      # Leave empty for development, set to domain in production
-
-# Logging
-LOG_LEVEL=INFO      # DEBUG, INFO, WARNING, ERROR
-LOG_FORMAT=json     # json or text
-LOG_FILE=logs/qiyasai.log
-```
-
-**IMPORTANT**: `SECRET_KEY` is **required**. The application will fail to start without it. Generate a secure key using:
-```bash
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-## Important Implementation Details
-
-### Authentication Flow (Cookie-Based)
-1. User registers/logs in via `/api/auth/register` or `/api/auth/token`
-2. Backend validates credentials and creates JWT (24-hour expiry)
-3. Backend sets JWT in **httpOnly cookie** via `Set-Cookie` header
-4. Backend returns CSRF token in response body
-5. Frontend stores CSRF token in state (not in localStorage/cookies)
-6. Frontend includes CSRF token in `X-CSRF-Token` header for non-GET requests
-7. Protected routes use `useAuth()` hook to check authentication status
-8. Cookies automatically sent by browser on all requests (`withCredentials: true`)
-9. On logout, backend clears cookie via `response.delete_cookie()`
-
-**Default User**:
-- Username: `Qiyas`
-- Password: `1208`
-- Created automatically on startup if no users exist
-
-### RAG Search Strategy
-The knowledge base service uses a **dual-search approach**:
-- **Semantic Search** (`query()`) - Vector similarity search (default, configurable `n_results`)
-- **Exact Search** (`search_exact()`) - Full-text filtering for precise ID/control number lookup
-- **Neighbor Expansion** (`get_neighbors()`) - Retrieves adjacent chunks by `chunk_index` for context
-
-### Session Knowledge Base
-- Each conversation can have uploaded documents stored in `SessionKnowledgeBase`
-- Documents are tagged with `conversation_id` metadata
-- When a conversation is deleted, its session documents are purged via `delete_session_data()`
-- Session queries filter by `conversation_id` to isolate documents per conversation
-
-### Document Processing
-`IngestionService` supports:
-- **PDF**: PyMuPDF (fitz) + pypdf fallback
-- **DOCX**: python-docx
-- **Excel**: pandas + openpyxl
-- **Images**: pytesseract for OCR (requires Tesseract installed on system)
-
-Chunking strategy:
-- Configurable `chunk_size` (default 1000 chars)
-- `overlap` of 100 chars to preserve context across boundaries
-- Chunks stored with `source`, `chunk_index` metadata
-
-### Frontend API Client
-- Uses `axios` for HTTP requests
-- Base URL handled by Vite proxy (`vite.config.js` proxies `/api` → `http://127.0.0.1:8000`)
-- **Cookie credentials** enabled via `axios.defaults.withCredentials = true`
-- **CSRF token** attached to non-GET requests via axios request interceptor
-- **Auto-logout** on 401 responses via axios response interceptor
-- No manual token management needed (browser handles cookies automatically)
-
-## Testing
-
-No test suite is currently configured. To add tests:
-
-**Backend**:
-```bash
-pip install pytest pytest-asyncio httpx
-# Create tests/ directory and write test_*.py files
-pytest
-```
-
-**Frontend**:
-```bash
-npm install --save-dev vitest @testing-library/react @testing-library/jest-dom
-# Add test script to package.json: "test": "vitest"
-npm test
 ```
 
 ## Common Tasks
 
 ### Adding a New API Endpoint
-1. Create route function in `Backend/Source/Api/Routes/<YourFile>.py`
-2. Include router in `Backend/Source/Main.py`: `app.include_router(YourFile.router, prefix="/api/yourprefix")`
-3. Update frontend API call in relevant component
+1. Create route in `Backend/Source/Api/Routes/<File>.py` with an `APIRouter`
+2. Register in `Backend/Source/Main.py`: `app.include_router(router, prefix="/api/...")`
+3. Add service logic in `Backend/Source/Services/` if non-trivial
+4. Use `Depends(get_current_user_from_cookie)` for auth, `Depends(require_role("admin"))` for RBAC
 
 ### Adding a New Frontend Page
-1. Create page in `Frontend/Source/Pages/<PageName>.jsx`
-2. Add route in `Frontend/Source/App.jsx` within `<Routes>`
-3. Update navigation (if needed) in `ChatHeader.jsx` or create new nav component
+1. Create page in `Frontend/Source/Pages/<Page>.jsx`
+2. Add route in `Frontend/Source/App.jsx` (wrap with `AdminRoute` if admin-only)
+3. Add translation keys to both `Frontend/Source/i18n/en.json` and `ar.json`
 
-### Modifying Vector Search Behavior
-- Edit `KnowledgeBaseService.py` methods: `query()`, `search_exact()`, `get_neighbors()`
-- Adjust `n_results` parameter in `Chat.py` route to change retrieval count
-- For different chunking strategies, modify `add_session_document()` or `IngestionService`
+### Modifying RAG Behavior
+- Retrieval: `KnowledgeBaseService.py` — `query()`, `search_hybrid()` (RRF merge), `search_exact()`, `get_neighbors()`
+- Chunking: `IngestionService.py` — configurable `chunk_size` (default 1000) and `overlap` (100)
+- LLM params: `AIService.get_chat_response()` — temperature, max_tokens, etc.
+- Result count: `n_results` parameter in `Chat.py` route
 
-### Changing LLM Model or Parameters
-- Update `AZURE_CHAT_DEPLOYMENT` in `.env` to point to different deployment
-- Modify `AIService.get_chat_response()` to add parameters like `temperature`, `max_tokens`
+### Adding Translations
+- Add keys to both `Frontend/Source/i18n/en.json` and `ar.json` (must maintain parity)
+- Use `t('section.key')` in components via `useTranslation()` from react-i18next or `useLocale()` from `LocaleContext`
+- Sections: `common`, `language`, `theme`, `chat`, `settings`, `toast`, `auth`, `admin`, `errors`, `status`
+
+## Known Limitations
+
+- **CSRF tokens are in-memory**: Stored in a Python dict (`Utils/CSRF.py`), not Redis. Lost on restart, breaks with multiple workers.
+- **Rate limiting is in-memory**: `RateLimiting.py` uses `storage_uri="memory://"` despite Redis being available in Docker.
+- **Sync embedding calls in async context**: `AIService.py` uses a synchronous `AzureOpenAI` client for embeddings, which blocks the event loop during `analyze_document_for_standard()`.
+- **Groq topic guard blocks event loop**: `Chat.py` creates a synchronous OpenAI client for the Groq topic guard inside an async endpoint.
+- **No Alembic migrations**: Despite being in requirements, migrations are hand-rolled in `Database.py` with idempotent `ADD COLUMN` statements.
+- **`Message.attachment_content`**: Stores full extracted document text in the SQL database (Text column), which can be very large for big PDFs.

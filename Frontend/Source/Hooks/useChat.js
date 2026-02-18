@@ -1,31 +1,28 @@
 import { useState, useRef } from 'react';
 import { useAuth } from '../Context/AuthContext';
+import { useLocale } from '../Context/LocaleContext';
 
 export const useChat = () => {
-    const { csrfToken, logout } = useAuth();
-    const [messages, setMessages] = useState([
-        { role: 'system', content: 'Welcome to QiyasAI Copilot. How can I assist you with DGA Qiyas controls today?' }
-    ]);
+    const { csrfToken, logout, refreshUser } = useAuth();
+    const { t } = useLocale();
+    const [messages, setMessages] = useState([]);
     const [isLoading, setIsLoading] = useState(false);
     const [hasError, setHasError] = useState(false);
 
     // Store last request for retry functionality
     const lastRequestRef = useRef(null);
+    const isSendingRef = useRef(false);
 
     // New Memory State
     const [isMemoryEnabled, setIsMemoryEnabled] = useState(true);
     const toggleMemory = () => setIsMemoryEnabled(prev => !prev);
-
-    const addMessage = (role, content) => {
-        setMessages(prev => [...prev, { role, content }]);
-    };
 
     const updateLastMessage = (content) => {
         setMessages(prev => {
             const newPrev = [...prev];
             const lastMsg = newPrev[newPrev.length - 1];
             if (lastMsg.role === 'assistant') {
-                lastMsg.content = content;
+                newPrev[newPrev.length - 1] = { ...lastMsg, content };
             }
             return newPrev;
         });
@@ -52,7 +49,12 @@ export const useChat = () => {
 
             if (response.status === 401) {
                 logout();
-                throw new Error("Unauthorized");
+                throw new Error(t('errors.unauthorized'));
+            }
+
+            if (response.status === 429) {
+                const errorData = await response.json();
+                throw new Error(errorData.message || t('errors.tokenLimit'));
             }
 
             if (!response.body) throw new Error('ReadableStream not supported');
@@ -76,20 +78,25 @@ export const useChat = () => {
                 const newPrev = [...prev];
                 const lastMsg = newPrev[newPrev.length - 1];
                 if (lastMsg.role === 'assistant') {
-                    lastMsg.content = 'Sorry, I encountered an error processing your request. Please ensure the backend is running.';
-                    lastMsg.isError = true;
+                    newPrev[newPrev.length - 1] = {
+                        ...lastMsg,
+                        content: error.message || t('errors.generic'),
+                        isError: true
+                    };
                 }
                 return newPrev;
             });
         } finally {
             setIsLoading(false);
+            // Refresh user data to update token usage in header
+            if (refreshUser) refreshUser();
         }
     };
 
     const retryLastMessage = async (conversationId = null) => {
         if (!lastRequestRef.current) return;
 
-        const { text, file } = lastRequestRef.current;
+        const { text, file, modelProvider, groqModel } = lastRequestRef.current;
         setHasError(false);
 
         // Remove the error message and original user message to resend
@@ -98,51 +105,67 @@ export const useChat = () => {
             const filtered = prev.filter((msg, idx) => {
                 if (idx === prev.length - 1 && msg.isError) return false;
                 if (idx === prev.length - 2 && msg.role === 'user') return false;
-                // Also remove file attachment system message if present
-                if (idx === prev.length - 3 && msg.role === 'system' && msg.content.startsWith('Attached file:')) return false;
                 return true;
             });
             return filtered;
         });
 
         // Resend the message
-        await sendMessage(text, file, conversationId);
+        await sendMessage(text, file, conversationId, modelProvider, groqModel);
     };
 
-    const sendMessage = async (text, file = null, conversationId = null) => {
-        // Store request for retry functionality
-        lastRequestRef.current = { text, file };
-        setHasError(false);
+    const sendMessage = async (text, file = null, conversationId = null, modelProvider = 'azure', groqModel = null) => {
+        if (isSendingRef.current) return;
+        isSendingRef.current = true;
 
-        // Optimistic UI Update
-        addMessage('user', text);
-        if (file) {
-            addMessage('system', `Attached file: ${file.name}`);
-        }
+        try {
+            // Store request for retry functionality
+            lastRequestRef.current = { text, file, modelProvider, groqModel };
+            setHasError(false);
 
-        const formData = new FormData();
-        formData.append('message', text);
-
-        // Chat Memory: Send last 10 messages ONLY if enabled
-        if (isMemoryEnabled) {
-            try {
-                const history = JSON.stringify(messages.slice(-10));
-                formData.append('history', history);
-            } catch (e) {
-                console.error("Failed to serialize history", e);
+            // Optimistic UI Update
+            const userMsg = { role: 'user', content: text || '' };
+            if (file) {
+                userMsg.attachment_name = file.name;
             }
-        }
+            setMessages(prev => [...prev, userMsg]);
 
-        if (file) {
-            formData.append('file', file);
-        }
+            const formData = new FormData();
+            formData.append('message', text);
 
-        if (conversationId) {
-            formData.append('conversation_id', conversationId);
-        }
+            // Chat Memory: Send last 10 messages ONLY if enabled
+            if (isMemoryEnabled) {
+                try {
+                    const history = JSON.stringify(
+                        messages.slice(-10).map(({ role, content }) => ({ role, content }))
+                    );
+                    formData.append('history', history);
+                } catch (e) {
+                    console.error("Failed to serialize history", e);
+                }
+            }
 
-        // Send to unified /chat endpoint
-        await streamRequest('/chat', formData, true);
+            if (file) {
+                formData.append('file', file);
+            }
+
+            if (conversationId) {
+                formData.append('conversation_id', conversationId);
+            }
+
+            if (modelProvider) {
+                formData.append('model_provider', modelProvider);
+            }
+
+            if (modelProvider === 'groq' && groqModel) {
+                formData.append('model_name', groqModel);
+            }
+
+            // Send to unified /chat endpoint
+            await streamRequest('/chat', formData, true);
+        } finally {
+            isSendingRef.current = false;
+        }
     };
 
     return {
@@ -151,6 +174,7 @@ export const useChat = () => {
         isLoading,
         sendMessage,
         isMemoryEnabled,
+        setIsMemoryEnabled,
         toggleMemory,
         hasError,
         retryLastMessage

@@ -1,91 +1,137 @@
 import React, { useState } from 'react';
 import { useAuth } from '../Context/AuthContext';
-import { useNavigate } from 'react-router-dom';
-import { Bot, Key, User } from 'lucide-react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Key, Mail, Loader2, Sun, Moon } from 'lucide-react';
+import { useLocale } from '../Context/LocaleContext';
+import { useTheme } from '../Context/ThemeContext';
+import LanguageSwitcher from '../Components/LanguageSwitcher';
 
 const LoginPage = () => {
-    const [username, setUsername] = useState('');
-    const [password, setPassword] = useState('');
-    const [error, setError] = useState('');
-    const { login } = useAuth();
-    const navigate = useNavigate();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [pendingActivation, setPendingActivation] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { login } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { t, dir } = useLocale();
+  const { theme, toggleTheme } = useTheme();
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
-        setError('');
-        const result = await login(username, password);
-        if (result.success) {
-            navigate('/');
-        } else {
-            setError(result.error);
-        }
-    };
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setPendingActivation(false);
+    setIsSubmitting(true);
+    try {
+      const result = await login(email, password);
+      if (result.success) {
+        const from = location.state?.from?.pathname || '/';
+        navigate(from);
+      } else {
+        setError(result.error);
+        setPendingActivation(!!result.pendingActivation);
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
-    return (
-        <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-            <div className="bg-slate-800 p-8 rounded-2xl shadow-xl w-full max-w-md border border-slate-700">
-                <div className="flex flex-col items-center mb-8">
-                    <div className="w-16 h-16 bg-blue-600 rounded-xl flex items-center justify-center mb-4 shadow-lg shadow-blue-500/20">
-                        <Bot size={32} className="text-white" />
-                    </div>
-                    <h1 className="text-2xl font-bold text-white">Welcome Back</h1>
-                    <p className="text-slate-400">Sign in to QiyasAI Copilot</p>
-                </div>
-
-                {error && (
-                    <div className="bg-red-500/10 border border-red-500/50 text-red-500 p-3 rounded-lg mb-6 text-sm">
-                        {error}
-                    </div>
-                )}
-
-                <form onSubmit={handleSubmit} className="space-y-6">
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-300">Username</label>
-                        <div className="relative">
-                            <User className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                            <input
-                                type="text"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
-                                className="w-full bg-slate-900 border border-slate-700 rounded-lg py-2.5 pl-10 pr-4 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                                placeholder="Enter your username"
-                                required
-                            />
-                        </div>
-                    </div>
-
-                    <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-300">Password</label>
-                        <div className="relative">
-                            <Key className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                            <input
-                                type="password"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                className="w-full bg-slate-900 border border-slate-700 rounded-lg py-2.5 pl-10 pr-4 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                                placeholder="Enter your password"
-                                required
-                            />
-                        </div>
-                    </div>
-
-                    <button
-                        type="submit"
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition-colors duration-200 shadow-lg shadow-blue-600/20"
-                    >
-                        Sign In
-                    </button>
-                </form>
-
-                <div className="mt-6 text-center text-sm text-slate-400">
-                    Don't have an account?{' '}
-                    <button onClick={() => navigate('/register')} className="text-blue-400 hover:text-blue-300 font-medium">
-                        Create account
-                    </button>
-                </div>
-            </div>
+  return (
+    <div className="min-h-screen auth-bg flex items-center justify-center p-4">
+      <div className="app-surface-elevated p-8 sm:p-10 rounded-2xl w-full max-w-md">
+        <div className="flex justify-end items-center gap-2 mb-2">
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="p-2 rounded-lg btn-ghost transition-colors focus-ring"
+            aria-label={theme === 'dark' ? t('theme.light') : t('theme.dark')}
+          >
+            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+          <LanguageSwitcher compact />
         </div>
-    );
+
+        <div className="flex flex-col items-center mb-8">
+          <div className="w-[4.5rem] h-[4.5rem] rounded-2xl brand-glow flex items-center justify-center mb-5">
+            <span className="text-white font-bold text-3xl">Q</span>
+          </div>
+          <h1 className="text-2xl font-bold app-title">{t('auth.welcomeBack')}</h1>
+          <p className="app-muted text-sm">{t('auth.signInSubtitle')}</p>
+        </div>
+
+        {error && (
+          <div className={`${pendingActivation ? 'status-warning' : 'status-danger'} p-3 rounded-lg mb-6 text-sm`} role="alert" aria-live="polite">
+            {pendingActivation ? t('auth.accountPendingLogin') : error}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-5" aria-label="Login form">
+          <div className="space-y-1.5">
+            <label htmlFor="email" className="text-sm font-medium app-text">
+              {t('auth.email')}
+            </label>
+            <div className="relative">
+              <Mail className={`absolute top-1/2 -translate-y-1/2 app-muted ${dir === 'rtl' ? 'right-3' : 'left-3'}`} size={18} />
+              <input
+                id="email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className={`w-full rounded-lg py-3 ${
+                  dir === 'rtl' ? 'pr-10 pl-4' : 'pl-10 pr-4'
+                } text-sm input-surface`}
+                placeholder={t('auth.enterEmail')}
+                required
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label htmlFor="password" className="text-sm font-medium app-text">
+              {t('auth.password')}
+            </label>
+            <div className="relative">
+              <Key className={`absolute top-1/2 -translate-y-1/2 app-muted ${dir === 'rtl' ? 'right-3' : 'left-3'}`} size={18} />
+              <input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className={`w-full rounded-lg py-3 ${
+                  dir === 'rtl' ? 'pr-10 pl-4' : 'pl-10 pr-4'
+                } text-sm input-surface`}
+                placeholder={t('auth.enterPassword')}
+                required
+              />
+            </div>
+          </div>
+
+          <button
+            type="submit"
+            disabled={isSubmitting}
+            className="w-full btn-primary py-3 rounded-xl text-sm font-medium transition-all disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-2 focus-ring"
+          >
+            {isSubmitting ? (
+              <>
+                <Loader2 size={18} className="animate-spin" />
+                {t('auth.signingIn')}
+              </>
+            ) : (
+              t('auth.signIn')
+            )}
+          </button>
+        </form>
+
+        <div className="mt-6 text-center text-sm app-muted">
+          {t('auth.dontHaveAccount')}{' '}
+          <button onClick={() => navigate('/register')} className="text-[var(--accent-500)] font-medium transition-colors focus-ring rounded">
+            {t('auth.createAccountLink')}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 };
 
 export default LoginPage;

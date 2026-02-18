@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from Backend.Source.Services.SettingsService import settings_service, SettingsModel
 from Backend.Source.Api.Routes.Auth import get_current_user
+from Backend.Source.Core.Dependencies import require_role
 from Backend.Source.Models.User import User
 from Backend.Source.Utils.CSRF import verify_csrf
 from Backend.Source.Core.Logging import logger
@@ -45,28 +46,41 @@ def validate_system_prompt(prompt: str) -> str:
 @router.get("/settings", response_model=SettingsModel)
 async def get_settings(current_user: User = Depends(get_current_user)):
     """
-    Get the current application settings.
-    Requires authentication.
+    Get settings for the current tenant.
     """
-    return settings_service.get_settings()
+    return settings_service.get_settings(str(current_user.tenant_id))
+
+
+VALID_MODEL_PROVIDERS = {"azure", "groq"}
 
 
 @router.post("/settings", response_model=SettingsModel)
 async def update_settings(
     settings_data: SettingsModel,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("admin", "owner")),
     _csrf: None = Depends(verify_csrf)
 ):
     """
     Update application settings.
-    Requires authentication and CSRF verification.
+    Requires admin/owner role and CSRF verification.
     """
     try:
+        # Validate model_provider
+        if settings_data.model_provider not in VALID_MODEL_PROVIDERS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid model_provider. Must be one of: {', '.join(VALID_MODEL_PROVIDERS)}"
+            )
+
         # Validate system prompt
         validated_prompt = validate_system_prompt(settings_data.system_prompt)
         settings_data.system_prompt = validated_prompt
 
-        settings_service.save_settings(settings_data)
+        # Validate topic guard prompt
+        if settings_data.topic_guard_prompt:
+            validate_system_prompt(settings_data.topic_guard_prompt)
+
+        settings_service.save_settings(settings_data, tenant_id=str(current_user.tenant_id))
         logger.info(f"Settings updated by user {current_user.username}")
         return settings_data
     except HTTPException:

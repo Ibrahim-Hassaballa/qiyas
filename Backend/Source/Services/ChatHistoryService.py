@@ -14,39 +14,36 @@ class ChatHistoryService:
     def get_db(self):
         return SessionLocal()
 
-    def create_conversation(self, user_id: int, title: str = "New Chat") -> Conversation:
+    def create_conversation(self, user_id, tenant_id, title: str = "New Chat") -> Conversation:
+        """Create a new conversation scoped to a tenant."""
         db = self.get_db()
         try:
-            conversation = Conversation(user_id=user_id, title=title)
+            conversation = Conversation(user_id=user_id, tenant_id=tenant_id, title=title)
             db.add(conversation)
             db.commit()
             db.refresh(conversation)
             return conversation
         except Exception as e:
             db.rollback()
-            logger.error(f"Error creating conversation for user {user_id}: {e}", exc_info=True)
+            logger.error(f"Error creating conversation for user {user_id} in tenant {tenant_id}: {e}", exc_info=True)
             raise
         finally:
             db.close()
 
-    def get_user_conversations(self, user_id: int, search_query: str = None):
+    def get_user_conversations(self, user_id, tenant_id, search_query: str = None):
         """
-        Get all conversations for a user, optionally filtered by search query.
-        
-        Args:
-            user_id: The user ID
-            search_query: Optional search string to filter by title or message content
-            
-        Returns:
-            List of Conversation objects matching the criteria
+        Get all conversations for a user within their tenant.
+        Defense-in-depth: filters by BOTH user_id AND tenant_id.
         """
         db = self.get_db()
         try:
-            query = db.query(Conversation).filter(Conversation.user_id == user_id)
+            query = db.query(Conversation).filter(
+                Conversation.user_id == user_id,
+                Conversation.tenant_id == tenant_id
+            )
             
             if search_query:
                 search_pattern = f"%{search_query}%"
-                # Search in title OR in any message content
                 query = query.outerjoin(Message).filter(
                     (Conversation.title.ilike(search_pattern)) |
                     (Message.content.ilike(search_pattern))
@@ -58,29 +55,23 @@ class ChatHistoryService:
 
     def get_conversation_history(
         self,
-        conversation_id: int,
-        user_id: int,
+        conversation_id,
+        user_id,
+        tenant_id,
         skip: int = 0,
         limit: int = 50
     ) -> Optional[Tuple[List[Message], int]]:
         """
         Get conversation history with pagination.
-
-        Args:
-            conversation_id: The conversation ID
-            user_id: The user ID for ownership verification
-            skip: Number of messages to skip (default 0)
-            limit: Maximum messages to return (default 50)
-
-        Returns:
-            Tuple of (messages list, total count) or None if not found/unauthorized
+        Verifies ownership by user_id AND tenant_id.
         """
         db = self.get_db()
         try:
-            # Verify conversation ownership
+            # Verify conversation ownership (defense-in-depth: both user and tenant)
             conversation = db.query(Conversation).filter(
                 Conversation.id == conversation_id,
-                Conversation.user_id == user_id
+                Conversation.user_id == user_id,
+                Conversation.tenant_id == tenant_id
             ).first()
             if not conversation:
                 return None
@@ -101,27 +92,22 @@ class ChatHistoryService:
 
     def get_recent_messages(
         self,
-        conversation_id: int,
-        user_id: int,
+        conversation_id,
+        user_id,
+        tenant_id,
         limit: int = 8
     ) -> Optional[List[Message]]:
         """
         Get the most recent messages for a conversation (for chat context building).
-
-        Args:
-            conversation_id: The conversation ID
-            user_id: The user ID for ownership verification
-            limit: Maximum number of recent messages to return (default 8)
-
-        Returns:
-            List of most recent messages in chronological order, or None if not found/unauthorized
+        Verifies ownership by user_id AND tenant_id.
         """
         db = self.get_db()
         try:
             # Verify conversation ownership
             conversation = db.query(Conversation).filter(
                 Conversation.id == conversation_id,
-                Conversation.user_id == user_id
+                Conversation.user_id == user_id,
+                Conversation.tenant_id == tenant_id
             ).first()
             if not conversation:
                 return None
@@ -136,7 +122,8 @@ class ChatHistoryService:
         finally:
             db.close()
 
-    def add_message(self, conversation_id: int, role: str, content: str, attachment_name: str = None, attachment_content: str = None):
+    def add_message(self, conversation_id, role: str, content: str, attachment_name: str = None, attachment_content: str = None):
+        """Add a message to a conversation. No tenant check needed here since conversation_id is already validated."""
         db = self.get_db()
         try:
             message = Message(
@@ -157,16 +144,19 @@ class ChatHistoryService:
         finally:
             db.close()
 
-    def delete_conversation(self, conversation_id: int, user_id: int):
+    def delete_conversation(self, conversation_id, user_id, tenant_id):
+        """Delete a conversation with tenant isolation."""
         db = self.get_db()
         try:
-            # Check ownership
-            conversation = db.query(Conversation).filter(Conversation.id == conversation_id, Conversation.user_id == user_id).first()
+            # Check ownership with tenant scoping
+            conversation = db.query(Conversation).filter(
+                Conversation.id == conversation_id,
+                Conversation.user_id == user_id,
+                Conversation.tenant_id == tenant_id
+            ).first()
             if not conversation:
                 return False
 
-            # Delete from SQLite (Reference Cascade should handle messages, but let's be safe if not configured)
-            # The model definition has cascade="all, delete-orphan", so deleting conversation deletes messages.
             db.delete(conversation)
             db.commit()
             

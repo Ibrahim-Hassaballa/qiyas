@@ -16,6 +16,12 @@ class AuthenticationError(QiyasAIException):
         super().__init__(message, status_code=401, details=details)
 
 
+class AccountInactiveError(QiyasAIException):
+    """User account exists but is not yet activated by admin"""
+    def __init__(self, message: str = "Account pending admin activation", details: Optional[Any] = None):
+        super().__init__(message, status_code=403, details=details)
+
+
 class AuthorizationError(QiyasAIException):
     """User not authorized for this action"""
     def __init__(self, message: str = "Access denied", details: Optional[Any] = None):
@@ -37,6 +43,12 @@ class FileProcessingError(QiyasAIException):
 class RateLimitExceeded(QiyasAIException):
     """Rate limit exceeded"""
     def __init__(self, message: str = "Too many requests", details: Optional[Any] = None):
+        super().__init__(message, status_code=429, details=details)
+
+
+class TokenLimitExceededError(QiyasAIException):
+    """User has exceeded their usage budget"""
+    def __init__(self, message: str = "Budget exceeded. Please contact your administrator.", details: Optional[Any] = None):
         super().__init__(message, status_code=429, details=details)
 
 

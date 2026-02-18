@@ -11,11 +11,17 @@ from Backend.Source.Core.Logging import logger
 from Backend.Source.Core.Exceptions import QiyasAIException
 from Backend.Source.Core.Config.Validator import validate_config
 from Backend.Source.Middleware.RateLimiting import limiter, rate_limit_exceeded_handler
-from Backend.Source.Api.Routes import Chat, Controls, Settings, Auth, History
-from Backend.Source.Core.Database import engine, Base
+from Backend.Source.Api.Routes import Chat, Controls, Settings, Auth, History, Admin
+from Backend.Source.Core.Database import engine, Base, run_migrations
 from Backend.Source.Services.AuthService import auth_service
 from Backend.Source.Core.Database import SessionLocal
 from Backend.Source.Services.IngestionService import IngestionService
+
+# Import all models so create_all picks them up
+from Backend.Source.Models.Tenant import Tenant    # noqa: F401
+from Backend.Source.Models.User import User        # noqa: F401
+from Backend.Source.Models.ChatModels import Conversation, Message  # noqa: F401
+from Backend.Source.Models.UsageReset import UsageReset  # noqa: F401
 
 # Validate configuration at startup (fail fast with clear errors)
 validate_config(settings)
@@ -23,10 +29,13 @@ validate_config(settings)
 # Create Tables
 Base.metadata.create_all(bind=engine)
 
-# Create Default User
+# Run migrations (add new columns if missing — idempotent)
+run_migrations()
+
+# Create Default Admin (creates tenant + admin user on first run)
 db = SessionLocal()
 try:
-    auth_service.create_default_user_if_not_exists(db)
+    auth_service.create_default_admin_if_not_exists(db)
 finally:
     db.close()
 
@@ -192,6 +201,7 @@ app.include_router(Chat.router, prefix="/api", tags=["Chat"])
 app.include_router(Controls.router, prefix="/api/controls", tags=["Controls"])
 app.include_router(History.router)
 app.include_router(Settings.router, prefix="/api")
+app.include_router(Admin.router, prefix="/api/admin", tags=["Admin"])
 
 
 @app.get("/health")

@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(python -m py_compile:*)",
+      "Bash(python:*)",
+      "Bash(npm ci:*)",
+      "Bash(npm view:*)",
+      "Bash(cd:*)",
+      "Bash(npx vitest:*)",
+      "Bash(npm run build:*)",
+      "Bash(npm run lint:*)",
+      "Bash(sed:*)"
+    ]
+  }
+}

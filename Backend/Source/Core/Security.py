@@ -30,10 +30,16 @@ def get_password_hash(password: str) -> str:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     """
-    Create a JWT access token
+    Create a JWT access token.
+    
+    The token payload should include:
+      - sub: user email (identifier)
+      - tenant_id: tenant UUID (string)
+      - role: user role (owner/admin/member)
+      - user_id: user UUID (string)
 
     Args:
-        data: Dictionary containing claims (e.g., {"sub": username})
+        data: Dictionary containing claims
         expires_delta: Optional custom expiration time
 
     Returns:
@@ -59,13 +65,13 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 def decode_access_token(token: str) -> dict:
     """
-    Decode and validate a JWT token
+    Decode and validate a JWT token.
 
     Args:
         token: JWT token string
 
     Returns:
-        Decoded token payload
+        Decoded token payload (includes sub, tenant_id, role, user_id)
 
     Raises:
         JWTError: If token is invalid or expired

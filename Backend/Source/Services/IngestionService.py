@@ -9,9 +9,7 @@ from Backend.Source.Core.Logging import logger
 class IngestionService:
     @staticmethod
     def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100):
-        """
-        Smart chunking that respects semantic boundaries (paragraphs, newlines).
-        """
+        """Smart chunking that respects semantic boundaries (paragraphs, newlines)."""
         if not text:
             return []
             
@@ -20,7 +18,6 @@ class IngestionService:
         def split_text_recursive(text, separators):
             final_chunks = []
             if not separators:
-                # Base case: Just slice hard
                 start = 0
                 while start < len(text):
                     final_chunks.append(text[start:start+chunk_size])
@@ -40,7 +37,6 @@ class IngestionService:
                         current_chunk = ""
                     
                     if len(s) > chunk_size:
-                        # Recursively split this big chunk
                         sub_chunks = split_text_recursive(s, separators[1:])
                         final_chunks.extend(sub_chunks)
                     else:
@@ -51,22 +47,19 @@ class IngestionService:
                 
             return final_chunks
 
-        # Initial clean up
         text = text.replace('\r', '')
         return split_text_recursive(text, separators)
 
     @staticmethod
-    async def ingest_file(file_path: Path):
+    async def ingest_file(file_path: Path, tenant_id: str = None):
         """
-        Ingests a local file into the Knowledge Base.
+        Ingests a local file into the tenant's Knowledge Base.
+        
+        Args:
+            file_path: Path to the file to ingest
+            tenant_id: Optional tenant ID for scoped ingestion
         """
         try:
-            # Mock UploadFile interface for DocumentService if needed, 
-            # OR better yet, update DocumentService to handle Paths directly?
-            # DocumentService expects UploadFile which has .filename and .content_type and .read() (async)
-            # We can reuse the LocalFile mock specific to this purpose or simplify DocumentService.
-            
-            # Let's use a simple wrapper inline here or re-use the one from the script concept
             class LocalFile:
                 def __init__(self, path): 
                     self.path = path
@@ -86,10 +79,11 @@ class IngestionService:
             # 2. Chunk
             chunks = IngestionService.chunk_text(text)
 
-            # 3. Store in Batches
+            # 3. Store in Batches (tenant-scoped)
             batch_size = 1
             total_chunks = len(chunks)
-            logger.info(f"Ingesting {total_chunks} chunks from {file_path.name} in batches of {batch_size}")
+            logger.info(f"Ingesting {total_chunks} chunks from {file_path.name} in batches of {batch_size}" + 
+                        (f" for tenant {tenant_id[:8]}" if tenant_id else ""))
             
             for i in range(0, total_chunks, batch_size):
                 batch_chunks = chunks[i : i + batch_size]
@@ -97,13 +91,15 @@ class IngestionService:
                 batch_metas = [{"source": file_path.name, "chunk_index": j} for j in range(i, i + len(batch_chunks))]
                 
                 try:
-                    get_kb_service().add_documents(documents=batch_chunks, ids=batch_ids, metadatas=batch_metas)
+                    get_kb_service().add_documents(
+                        documents=batch_chunks, ids=batch_ids, metadatas=batch_metas,
+                        tenant_id=tenant_id
+                    )
                     logger.debug(f"Ingested batch {i} to {i+len(batch_chunks)} from {file_path.name}")
-                    # Yield control to event loop to allow health checks to pass
                     await asyncio.sleep(0.05)
                 except Exception as e:
                     logger.error(f"Error ingesting batch {i} from {file_path.name}: {e}", exc_info=True)
-                    continue # Skip this batch and continue
+                    continue
 
             return True, f"Ingested chunks (skipping failures)"
 
@@ -111,44 +107,45 @@ class IngestionService:
             return False, str(e)
 
     @staticmethod
-    def delete_document(filename: str):
-        """
-        Removes a document's chunks from Chroma.
-        """
+    def delete_document(filename: str, tenant_id: str = None):
+        """Removes a document's chunks from the tenant's Chroma collection."""
         try:
-            get_kb_service().collection.delete(where={"source": filename})
+            kb = get_kb_service()
+            collection = kb._get_tenant_collection(tenant_id)
+            collection.delete(where={"source": filename})
             return True
         except Exception as e:
             logger.error(f"Error deleting {filename} from knowledge base: {e}")
             return False
 
     @staticmethod
-    def is_file_ingested(filename: str) -> bool:
-        """
-        Check if a file has already been ingested into the knowledge base.
-        """
+    def is_file_ingested(filename: str, tenant_id: str = None) -> bool:
+        """Check if a file has been ingested into the tenant's knowledge base."""
         try:
-            results = get_kb_service().collection.get(where={"source": filename}, limit=1)
+            kb = get_kb_service()
+            collection = kb._get_tenant_collection(tenant_id)
+            results = collection.get(where={"source": filename}, limit=1)
             return len(results.get("ids", [])) > 0
         except Exception as e:
             logger.error(f"Error checking if {filename} is ingested: {e}")
             return False
 
     @staticmethod
-    async def auto_ingest_existing_files():
+    async def auto_ingest_existing_files(tenant_id: str = None):
         """
-        Automatically ingest all files from the Raw data folder that haven't been ingested yet.
-        Called on application startup.
+        Automatically ingest all files from the Raw data folder.
+        If tenant_id is provided, scopes to the tenant's data directory.
         """
-        # Normalize path separators for cross-platform compatibility
-        chroma_path = settings.CHROMA_DB_PATH.replace("\\", "/")
-        raw_path = Path(chroma_path).parent / "Raw"
+        if tenant_id:
+            raw_path = Path(f"Data/Tenants/{tenant_id}/Raw")
+        else:
+            chroma_path = settings.CHROMA_DB_PATH.replace("\\", "/")
+            raw_path = Path(chroma_path).parent / "Raw"
         
         if not raw_path.exists():
             logger.info(f"Raw data folder does not exist: {raw_path}")
             return
         
-        # Get all files (excluding temp files starting with ~)
         files = [f for f in raw_path.iterdir() if f.is_file() and not f.name.startswith("~")]
         
         if not files:
@@ -162,14 +159,13 @@ class IngestionService:
         
         for file_path in files:
             try:
-                # Check if already ingested
-                if IngestionService.is_file_ingested(file_path.name):
+                if IngestionService.is_file_ingested(file_path.name, tenant_id=tenant_id):
                     logger.debug(f"Skipping already ingested file: {file_path.name}")
                     skipped_count += 1
                     continue
                 
                 logger.info(f"Auto-ingesting file: {file_path.name}")
-                success, msg = await IngestionService.ingest_file(file_path)
+                success, msg = await IngestionService.ingest_file(file_path, tenant_id=tenant_id)
                 
                 if success:
                     ingested_count += 1

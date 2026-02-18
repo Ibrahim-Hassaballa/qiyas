@@ -11,24 +11,15 @@ class UnifiedEmbeddingFunction:
     """
 
     def __init__(self, provider: str = None, model: str = None):
-        """
-        Initialize embedding function.
-
-        Args:
-            provider: "azure" (defaults to azure, ollama not supported yet)
-            model: Optional model name override
-        """
         self._provider_name = provider or 'azure'
         self._model_name = model or settings.AZURE_EMBEDDING_DEPLOYMENT
         self._client = None
         self._dimension = 1536  # text-embedding-ada-002 dimension
 
     def name(self) -> str:
-        """Name of the embedding function (required by ChromaDB 0.4+)."""
         return "UnifiedEmbeddingFunction"
 
     def _get_client(self):
-        """Lazy initialization of Azure OpenAI client."""
         if self._client is None:
             self._client = AzureOpenAI(
                 azure_endpoint=settings.AZURE_EMBEDDING_ENDPOINT,
@@ -40,14 +31,9 @@ class UnifiedEmbeddingFunction:
 
     @property
     def dimension(self) -> int:
-        """Return the embedding dimension."""
         return self._dimension
 
     def __call__(self, input: list[str]) -> list[list[float]]:
-        """
-        Generate embeddings for a list of texts.
-        ChromaDB calls this method for embedding.
-        """
         client = self._get_client()
         try:
             response = client.embeddings.create(
@@ -60,79 +46,54 @@ class UnifiedEmbeddingFunction:
             raise e
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """Compatibility method for ChromaDB."""
         return self(texts)
 
     def embed_query(self, *args, **kwargs) -> list[list[float]]:
-        """
-        Compatibility method for ChromaDB which may call embed_query with a list.
-        Returns a list of embeddings (vectors).
-        """
         input_data = kwargs.get('input') or kwargs.get('text')
         if not input_data and args:
             input_data = args[0]
-
         if isinstance(input_data, str):
             input_data = [input_data]
-
         return self(input_data)
 
 
-# Keep old class for backward compatibility during transition
+# Keep old class for backward compatibility
 class CustomAzureEmbeddingFunction(UnifiedEmbeddingFunction):
-    """
-    Legacy Azure embedding function. Use UnifiedEmbeddingFunction instead.
-    Kept for backward compatibility.
-    """
-
     def __init__(self):
         super().__init__(provider="azure")
+
 
 class KnowledgeBaseService:
     def __init__(self, provider: str = None, model: str = None):
         """
         Initialize Knowledge Base Service.
-
-        Args:
-            provider: Embedding provider ("azure" or "ollama"). Defaults to settings.
-            model: Optional embedding model override
+        Uses per-tenant ChromaDB collections for data isolation.
         """
-        # Persistent Client (saves to disk)
         import chromadb
         base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         db_path = os.path.join(base_path, settings.CHROMA_DB_PATH)
 
         self.client = chromadb.PersistentClient(path=db_path)
-
-        # Use Unified Embedding Function (supports Azure and Ollama)
         self.embedding_fn = UnifiedEmbeddingFunction(provider=provider, model=model)
 
-        # Get or create main collection with dimension metadata
-        self.collection = self._get_or_create_collection_with_validation(
+        # Cache for tenant collections to avoid repeated get_or_create calls
+        self._tenant_collections = {}
+        self._session_collections = {}
+
+        # Keep a default collection for backward compatibility / global operations
+        self._default_collection = self._get_or_create_collection_with_validation(
             name="dga_qiyas_controls",
             embedding_function=self.embedding_fn
         )
 
-        # Session Knowledge Base (Transient/User Uploads)
-        self.session_collection = self._get_or_create_collection_with_validation(
-            name="SessionKnowledgeBase",
-            embedding_function=self.embedding_fn
-        )
-
     def _get_or_create_collection_with_validation(self, name: str, embedding_function):
-        """
-        Get or create a collection with dimension validation.
-        Warns if existing collection has different embedding dimension.
-        """
-        # Use standard get_or_create_collection which handles existence check safely
+        """Get or create a collection with dimension validation."""
         collection = self.client.get_or_create_collection(
             name=name,
             embedding_function=embedding_function,
-            # Only set metadata if creating (Chroma handles this merge if we pass it, but for safety let's just pass it)
             metadata={"embedding_dimension": embedding_function.dimension}
         )
 
-        # Validate dimension if possible (optional but good practice)
         stored_dim = collection.metadata.get("embedding_dimension") if collection.metadata else None
         current_dim = embedding_function.dimension
 
@@ -144,86 +105,167 @@ class KnowledgeBaseService:
 
         return collection
 
-    def add_documents(self, documents: list[str], ids: list[str], metadatas: list[dict] = None):
+    def _get_tenant_collection(self, tenant_id: str = None):
         """
-        Adds text documents to the vector DB.
+        Get the collection for a specific tenant.
+        Each tenant has their own isolated ChromaDB collection.
+        Falls back to the default global collection if no tenant_id provided.
         """
-        self.collection.upsert(
+        if not tenant_id:
+            return self._default_collection
+
+        if tenant_id not in self._tenant_collections:
+            collection_name = f"tenant_{tenant_id[:8]}_standards"
+            self._tenant_collections[tenant_id] = self._get_or_create_collection_with_validation(
+                name=collection_name,
+                embedding_function=self.embedding_fn
+            )
+            logger.info(f"Created/loaded collection for tenant: {tenant_id[:8]}")
+
+        return self._tenant_collections[tenant_id]
+
+    def _get_session_collection(self, tenant_id: str = None):
+        """
+        Get the session collection for a specific tenant.
+        Used for per-conversation uploaded documents.
+        """
+        if not tenant_id:
+            # Backward compat: use a global session collection
+            return self._get_or_create_collection_with_validation(
+                name="SessionKnowledgeBase",
+                embedding_function=self.embedding_fn
+            )
+
+        if tenant_id not in self._session_collections:
+            collection_name = f"tenant_{tenant_id[:8]}_sessions"
+            self._session_collections[tenant_id] = self._get_or_create_collection_with_validation(
+                name=collection_name,
+                embedding_function=self.embedding_fn
+            )
+
+        return self._session_collections[tenant_id]
+
+    # --- GLOBAL / TENANT KNOWLEDGE METHODS ---
+
+    def add_documents(self, documents: list[str], ids: list[str], metadatas: list[dict] = None, tenant_id: str = None):
+        """Add documents to the tenant's knowledge base collection."""
+        collection = self._get_tenant_collection(tenant_id)
+        collection.upsert(
             documents=documents,
             ids=ids,
             metadatas=metadatas
         )
 
-    def query(self, query_text: str, n_results: int = 5):
+    def query(self, query_text: str, n_results: int = 5, tenant_id: str = None):
         """
-        Search for relevant documents.
+        Search the tenant's collection + the default (shared) collection.
+        Merges results via RRF so default knowledge base is always accessible.
         """
-        results = self.collection.query(
+        # Always search the default/global collection first
+        default_results = self._default_collection.query(
             query_texts=[query_text],
             n_results=n_results
         )
-        return results
+
+        # If tenant has their own collection, search it too and merge
+        if tenant_id:
+            tenant_collection = self._get_tenant_collection(tenant_id)
+            if tenant_collection != self._default_collection:
+                tenant_results = tenant_collection.query(
+                    query_texts=[query_text],
+                    n_results=n_results
+                )
+                return self._merge_query_results(default_results, tenant_results, n_results)
+
+        return default_results
         
-    def search_exact(self, query: str, limit: int = 2000):
-        """
-        Performs a deterministic search using Full Collection Scan + Strict Python Filtering.
-        This bypasses vector ANN approximation to guarantee finding specific IDs.
-        """
+    def _merge_query_results(self, results_a: dict, results_b: dict, limit: int) -> dict:
+        """Merge two ChromaDB query results, deduplicating by ID."""
+        seen = set()
+        merged_ids = []
+        merged_docs = []
+        merged_metas = []
+        merged_dists = []
+
+        for results in [results_a, results_b]:
+            if results.get('ids') and results['ids'][0]:
+                ids = results['ids'][0]
+                docs = results['documents'][0] if results.get('documents') else []
+                metas = results['metadatas'][0] if results.get('metadatas') else []
+                dists = results['distances'][0] if results.get('distances') else []
+                for i, doc_id in enumerate(ids):
+                    if doc_id not in seen:
+                        seen.add(doc_id)
+                        merged_ids.append(doc_id)
+                        merged_docs.append(docs[i] if i < len(docs) else "")
+                        merged_metas.append(metas[i] if i < len(metas) else {})
+                        merged_dists.append(dists[i] if i < len(dists) else 0)
+
+        # Sort by distance (ascending = most similar) and limit
+        if merged_dists:
+            combined = sorted(zip(merged_dists, merged_ids, merged_docs, merged_metas))
+            combined = combined[:limit]
+            return {
+                "ids": [[c[1] for c in combined]],
+                "documents": [[c[2] for c in combined]],
+                "metadatas": [[c[3] for c in combined]],
+                "distances": [[c[0] for c in combined]]
+            }
+
+        return {"ids": [merged_ids[:limit]], "documents": [merged_docs[:limit]], "metadatas": [merged_metas[:limit]], "distances": [merged_dists[:limit]]}
+
+    def search_exact(self, query: str, limit: int = 2000, tenant_id: str = None):
+        """Exact search across default + tenant collection."""
         try:
-            # 1. Use ChromaDB's native filtering
-            # This pushes the query to the database engine, avoiding loading all docs into RAM.
-            results = self.collection.get(
+            # Search default collection
+            default_results = self._default_collection.get(
                 where_document={"$contains": query},
                 limit=limit,
                 include=["documents", "metadatas"]
             )
-            
-            return results
 
+            # Also search tenant collection if different
+            if tenant_id:
+                tenant_collection = self._get_tenant_collection(tenant_id)
+                if tenant_collection != self._default_collection:
+                    tenant_results = tenant_collection.get(
+                        where_document={"$contains": query},
+                        limit=limit,
+                        include=["documents", "metadatas"]
+                    )
+                    # Merge flat results (dedup by ID)
+                    seen = set(default_results.get('ids', []))
+                    for i, doc_id in enumerate(tenant_results.get('ids', [])):
+                        if doc_id not in seen:
+                            default_results['ids'].append(doc_id)
+                            if tenant_results.get('documents'):
+                                default_results.setdefault('documents', []).append(tenant_results['documents'][i])
+                            if tenant_results.get('metadatas'):
+                                default_results.setdefault('metadatas', []).append(tenant_results['metadatas'][i])
+
+            return default_results
         except Exception as e:
             logger.error(f"Exact search scan failed for query '{query}': {e}")
             return {"ids": [], "documents": [], "metadatas": []}
 
-    def search_hybrid(self, query_text: str, n_results: int = 5, lexical_query: str = None) -> dict:
-        """
-        Hybrid search combining semantic and lexical search.
-        Uses Reciprocal Rank Fusion (RRF) to combine rankings.
-        Args:
-            query_text: The text for semantic search (can include extra context)
-            n_results: Number of results to return
-            lexical_query: Optional text for exact search (defaults to query_text). 
-                           Useful when query_text has appended metadata.
-        """
+    def search_hybrid(self, query_text: str, n_results: int = 5, lexical_query: str = None, tenant_id: str = None) -> dict:
+        """Hybrid search within tenant's collection."""
         try:
-            # 1. Semantic Search (Vector)
-            # Fetch more results than needed to allow for re-ranking
-            semantic_results = self.query(query_text, n_results=n_results * 2)
-            
-            # 2. Lexical Search (Exact Phrase)
-            # Use specific lexical query if provided, else use the full text
+            semantic_results = self.query(query_text, n_results=n_results * 2, tenant_id=tenant_id)
             target_lexical = lexical_query if lexical_query else query_text
-            lexical_results = self.search_exact(target_lexical)
-            
-            # 3. Combine using RRF
+            lexical_results = self.search_exact(target_lexical, tenant_id=tenant_id)
             combined_results = self._rrf_merge(semantic_results, lexical_results, n_results)
-            
             return combined_results
         except Exception as e:
             logger.error(f"Hybrid search failed for '{query_text}': {e}")
-            # Fallback to semantic search
-            return self.query(query_text, n_results)
+            return self.query(query_text, n_results, tenant_id=tenant_id)
 
     def _rrf_merge(self, semantic: dict, lexical: dict, limit: int, k: int = 60) -> dict:
-        """
-        Merges results using Reciprocal Rank Fusion.
-        score = 1 / (k + rank)
-        """
+        """Merges results using Reciprocal Rank Fusion."""
         scores = {}
         metadata_map = {}
         document_map = {}
         
-        # Process Semantic Results
-        # Semantic results are lists of lists (batch format)
         if semantic.get('ids') and len(semantic['ids']) > 0:
             sem_ids = semantic['ids'][0]
             sem_metas = semantic['metadatas'][0] if semantic.get('metadatas') else []
@@ -233,15 +275,11 @@ class KnowledgeBaseService:
                 if doc_id not in scores:
                     scores[doc_id] = 0
                 scores[doc_id] += 1 / (k + rank + 1)
-                
-                # Store data for retrieval
                 if doc_id not in metadata_map and rank < len(sem_metas):
                     metadata_map[doc_id] = sem_metas[rank]
                 if doc_id not in document_map and rank < len(sem_docs):
                     document_map[doc_id] = sem_docs[rank]
 
-        # Process Lexical Results
-        # Lexical results are flat lists (from .get())
         if lexical.get('ids'):
             lex_ids = lexical['ids']
             lex_metas = lexical['metadatas'] if lexical.get('metadatas') else []
@@ -250,52 +288,58 @@ class KnowledgeBaseService:
             for rank, doc_id in enumerate(lex_ids):
                 if doc_id not in scores:
                     scores[doc_id] = 0
-                # Lexical matches are treated as high priority
                 scores[doc_id] += 1 / (k + rank + 1)
-                
                 if doc_id not in metadata_map and rank < len(lex_metas):
                     metadata_map[doc_id] = lex_metas[rank]
                 if doc_id not in document_map and rank < len(lex_docs):
                     document_map[doc_id] = lex_docs[rank]
 
-        # Sort by Score (Descending)
         sorted_ids = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)[:limit]
         
-        # Format output to match ChromaDB query structure
         return {
             "ids": [sorted_ids],
             "metadatas": [[metadata_map.get(id, {}) for id in sorted_ids]],
             "documents": [[document_map.get(id, "") for id in sorted_ids]],
-            "distances": [[scores.get(id, 0) for id in sorted_ids]]  # Returning RRF scores as distances (not true distances)
+            "distances": [[scores.get(id, 0) for id in sorted_ids]]
         }
 
-    def get_neighbors(self, filename: str, index: int, window: int = 1):
-        """
-        Retrieves neighbor chunks (index-window to index+window) for context expansion.
-        """
+    def get_neighbors(self, filename: str, index: int, window: int = 1, tenant_id: str = None):
+        """Retrieves neighbor chunks from default + tenant collections."""
         start = max(0, index - window)
         end = index + window
-        
-        # Build list of target indices
         target_indices = list(range(start, end + 1))
+        where_filter = {
+            "$and": [
+                {"source": filename},
+                {"chunk_index": {"$in": target_indices}}
+            ]
+        }
         
         try:
-            results = self.collection.get(
-                where={
-                    "$and": [
-                        {"source": filename},
-                        {"chunk_index": {"$in": target_indices}}
-                    ]
-                },
+            # Search default collection first
+            results = self._default_collection.get(
+                where=where_filter,
                 include=["documents", "metadatas"]
             )
             
-            # Sort by chunk_index to maintain reading order
-            combined = []
+            # Also search tenant collection if different
+            if tenant_id:
+                tenant_collection = self._get_tenant_collection(tenant_id)
+                if tenant_collection != self._default_collection:
+                    tenant_results = tenant_collection.get(
+                        where=where_filter,
+                        include=["documents", "metadatas"]
+                    )
+                    # Merge
+                    seen = set(results.get('ids', []))
+                    for i, doc_id in enumerate(tenant_results.get('ids', [])):
+                        if doc_id not in seen:
+                            results['ids'].append(doc_id)
+                            results['documents'].append(tenant_results['documents'][i])
+                            results['metadatas'].append(tenant_results['metadatas'][i])
+
             if results['ids']:
-                # Zip and sort
                 zipped = zip(results['documents'], results['metadatas'])
-                # Sort by chunk_index
                 sorted_docs = sorted(zipped, key=lambda x: x[1].get('chunk_index', 0))
                 return [doc[0] for doc in sorted_docs]
             return []
@@ -305,28 +349,26 @@ class KnowledgeBaseService:
 
     # --- SESSION KNOWLEDGE METHODS ---
 
-    def add_session_document(self, text: str, conversation_id: int, filename: str):
-        """
-        Adds a document to the Session Knowledge Base.
-        Chunks the text and tags it with conversation_id.
-        """
+    def add_session_document(self, text: str, conversation_id, filename: str, tenant_id: str = None):
+        """Add a document to the tenant's session knowledge base."""
+        collection = self._get_session_collection(tenant_id)
         try:
-            # Simple chunking for now (approx 1000 chars)
             chunk_size = 1000
             overlap = 100
             chunks = []
-            
+
             start = 0
             while start < len(text):
                 end = start + chunk_size
                 chunks.append(text[start:end])
                 start = end - overlap
-            
-            ids = [f"sess_{conversation_id}_{i}_{os.urandom(4).hex()}" for i in range(len(chunks))]
-            metadatas = [{"conversation_id": conversation_id, "source": filename, "chunk_index": i} for i in range(len(chunks))]
+
+            conv_id_str = str(conversation_id)
+            ids = [f"sess_{conv_id_str}_{i}_{os.urandom(4).hex()}" for i in range(len(chunks))]
+            metadatas = [{"conversation_id": conv_id_str, "source": filename, "chunk_index": i} for i in range(len(chunks))]
 
             logger.info(f"Adding {len(chunks)} chunks to Session KB for conversation {conversation_id} from {filename}")
-            self.session_collection.upsert(
+            collection.upsert(
                 documents=chunks,
                 ids=ids,
                 metadatas=metadatas
@@ -336,29 +378,27 @@ class KnowledgeBaseService:
             logger.error(f"Failed to add session document {filename} for conversation {conversation_id}: {e}")
             return False
 
-    def query_session(self, query: str, conversation_id: int, n_results: int = 5):
-        """
-        Searches ONLY within the specific conversation's documents.
-        """
+    def query_session(self, query: str, conversation_id, n_results: int = 5, tenant_id: str = None):
+        """Search within the tenant's session documents for a conversation."""
+        collection = self._get_session_collection(tenant_id)
         try:
-            results = self.session_collection.query(
+            results = collection.query(
                 query_texts=[query],
                 n_results=n_results,
-                where={"conversation_id": conversation_id}
+                where={"conversation_id": str(conversation_id)}
             )
             return results
         except Exception as e:
             logger.error(f"Session query failed for conversation {conversation_id}: {e}")
             return {"ids": [], "documents": [], "metadatas": []}
 
-    def delete_session_data(self, conversation_id: int):
-        """
-        Deletes all vectors associated with a conversation.
-        """
+    def delete_session_data(self, conversation_id, tenant_id: str = None):
+        """Delete all vectors for a conversation from the tenant's session collection."""
+        collection = self._get_session_collection(tenant_id)
         try:
             logger.info(f"Deleting session data for conversation {conversation_id}")
-            self.session_collection.delete(
-                where={"conversation_id": conversation_id}
+            collection.delete(
+                where={"conversation_id": str(conversation_id)}
             )
             return True
         except Exception as e:
@@ -369,23 +409,11 @@ _kb_service_instance = None
 _kb_service_provider = None
 
 def get_kb_service(provider: str = None, model: str = None, force_new: bool = False):
-    """
-    Get or create Knowledge Base Service instance.
-
-    Args:
-        provider: Embedding provider ("azure" or "ollama"). Defaults to settings.
-        model: Optional embedding model override
-        force_new: Force creation of new instance (useful when switching providers)
-
-    Returns:
-        KnowledgeBaseService instance
-    """
+    """Get or create Knowledge Base Service instance (singleton)."""
     global _kb_service_instance, _kb_service_provider
 
-    # Determine the provider to use
     target_provider = provider or getattr(settings, 'EMBEDDING_PROVIDER', 'azure')
 
-    # Check if we need a new instance (provider changed or forced)
     if force_new or _kb_service_instance is None or _kb_service_provider != target_provider:
         _kb_service_instance = KnowledgeBaseService(provider=provider, model=model)
         _kb_service_provider = target_provider

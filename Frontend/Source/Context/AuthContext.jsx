@@ -53,6 +53,7 @@ export const AuthProvider = ({ children }) => {
             const csrfResponse = await api.get('/auth/csrf');
             setCsrfToken(csrfResponse.data.csrf_token);
         } catch (error) {
+            void error;
             console.log("Not authenticated or session expired");
             setUser(null);
             setCsrfToken(null);
@@ -84,28 +85,42 @@ export const AuthProvider = ({ children }) => {
             return { success: true };
         } catch (error) {
             console.error("Login failed", error);
-            return { success: false, error: error.response?.data?.message || "Login failed" };
+            const statusCode = error.response?.status;
+            const message = error.response?.data?.message;
+            const errorCode = error.response?.data?.details?.error_code;
+            if (statusCode === 403 && errorCode === "ACCOUNT_INACTIVE") {
+                return { success: false, error: message, pendingActivation: true };
+            }
+            return { success: false, error: message || "Login failed" };
         }
     };
 
-    const register = async (username, password) => {
+    const register = async (email, username, password, tenantId) => {
         try {
             const response = await api.post('/auth/register', {
+                email,
                 username,
-                password
+                password,
+                tenant_id: tenantId
             });
 
-            // Token is now in httpOnly cookie
-            setCsrfToken(response.data.csrf_token);
-
-            // Fetch user info
-            const userResponse = await api.get('/auth/me');
-            setUser(userResponse.data);
-
-            return { success: true };
+            return {
+                success: true,
+                message: response.data.message,
+                pendingActivation: response.data.pending_activation
+            };
         } catch (error) {
             console.error("Registration failed", error);
             return { success: false, error: error.response?.data?.message || error.response?.data?.detail || "Registration failed" };
+        }
+    };
+
+    const refreshUser = async () => {
+        try {
+            const response = await api.get('/auth/me');
+            setUser(response.data);
+        } catch (error) {
+            console.error("Failed to refresh user data", error);
         }
     };
 
@@ -121,11 +136,12 @@ export const AuthProvider = ({ children }) => {
     };
 
     return (
-        <AuthContext.Provider value={{ user, login, logout, register, loading, csrfToken }}>
+        <AuthContext.Provider value={{ user, login, logout, register, refreshUser, loading, csrfToken }}>
             {!loading && children}
         </AuthContext.Provider>
     );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useAuth = () => useContext(AuthContext);
 

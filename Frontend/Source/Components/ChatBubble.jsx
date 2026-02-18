@@ -1,80 +1,166 @@
-import React from 'react';
+import React, { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Shield, Paperclip, Check, Copy, RefreshCw } from 'lucide-react';
+import { Paperclip, Check, Copy, RefreshCw } from 'lucide-react';
+import { useLocale } from '../Context/LocaleContext';
+import { getTextDirection } from '../utils/direction';
 
-const ChatBubble = ({ message, index, onCopy, copiedIdx, onRetry }) => {
-    return (
-        <div
-            className={`flex gap-4 max-w-4xl mx-auto ${message.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
-        >
-            {/* Avatar */}
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 ${message.role === 'assistant'
-                ? 'bg-gradient-to-tr from-cyan-500 to-blue-500 dark:from-cyan-600 dark:to-blue-600 shadow-lg shadow-cyan-500/20 dark:shadow-cyan-900/20'
-                : message.role === 'system'
-                    ? 'bg-purple-100 dark:bg-purple-900/50'
-                    : 'bg-slate-200 dark:bg-slate-700'
-                }`}>
-                {message.role === 'assistant' ? <Shield size={14} className="text-white" /> :
-                    message.role === 'system' ? <Paperclip size={14} className="text-purple-600 dark:text-purple-300" /> :
-                        <div className="w-2 h-2 bg-slate-500 dark:bg-slate-400 rounded-full" />}
-            </div>
+const ChatBubble = memo(
+  ({
+    message,
+    index,
+    onCopy,
+    copiedIdx,
+    onRetry,
+    isStreaming,
+    userInitial,
+    thinkingText = 'Thinking...',
+    isGrouped = false,
+    isFirst = false
+  }) => {
+    const { t } = useLocale();
+    const isUser = message.role === 'user';
+    const isAssistant = message.role === 'assistant';
+    const isSystem = message.role === 'system';
+    const contentDirection = getTextDirection(message.content || message.attachment_name);
 
-            {/* Bubble */}
-            <div
-                className={`relative group flex-1 rounded-2xl px-6 py-4 shadow-sm ${message.role === 'user'
-                    ? 'bg-white border border-slate-100 text-slate-800 dark:bg-slate-800 dark:border-transparent dark:text-slate-100 rounded-tr-sm'
-                    : message.role === 'system'
-                        ? 'bg-purple-50 border border-purple-100 text-purple-700 dark:bg-purple-950/30 dark:border-purple-900/30 dark:text-purple-200 text-sm'
-                        : 'bg-slate-100 border border-slate-200 text-slate-700 dark:bg-slate-950/40 dark:border-slate-800/50 dark:text-slate-300 rounded-tl-sm'
-                    }`}
-            >
-                <button
-                    onClick={() => onCopy(message.content, index)}
-                    className={`absolute top-2 right-2 p-1.5 rounded-lg transition-all opacity-0 group-hover:opacity-100 ${copiedIdx === index
-                        ? 'bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400 opacity-100'
-                        : 'bg-black/5 text-slate-400 hover:bg-black/10 hover:text-slate-600 dark:bg-white/5 dark:text-slate-500 dark:hover:bg-white/10 dark:hover:text-slate-300'
-                        }`}
-                    title="Copy to clipboard"
-                >
-                    {copiedIdx === index ? <Check size={14} /> : <Copy size={14} />}
-                </button>
+    const userProseClasses =
+      'user-bubble-prose prose-pre:bg-blue-100/70 prose-code:text-blue-900 prose-code:bg-blue-100 prose-a:text-blue-800 prose-a:underline prose-strong:text-blue-950 prose-headings:text-blue-950 dark:prose-pre:bg-white/10 dark:prose-code:text-white dark:prose-code:bg-white/15 dark:prose-a:text-blue-100 dark:prose-strong:text-white dark:prose-headings:text-white';
+    const assistantProseClasses =
+      'prose-stone dark:prose-invert prose-pre:bg-[var(--surface-subtle)] dark:prose-pre:bg-[var(--surface-subtle)]';
 
-                {/* Attachment Indicator */}
-                {message.attachment_name && (
-                    <div className="mb-3 pb-2 border-b border-slate-200 dark:border-slate-700/50 flex items-center gap-2 font-medium text-slate-700 dark:text-slate-300">
-                        <div className="p-1.5 bg-slate-200 dark:bg-slate-800 rounded-md">
-                            <Paperclip size={14} />
-                        </div>
-                        <span className="text-sm truncate max-w-[250px]">{message.attachment_name}</span>
-                    </div>
-                )}
+    const marginClass = isFirst ? 'mt-0' : 'mt-6';
 
-                <div
-                    className={`prose prose-slate max-w-none prose-p:leading-relaxed dark:prose-invert prose-pre:bg-slate-800 dark:prose-pre:bg-slate-900 ${message.role === 'assistant' && /[\u0600-\u06FF]/.test(message.content) ? 'text-right' : 'text-left'
-                        }`}
-                    dir={message.role === 'assistant' && /[\u0600-\u06FF]/.test(message.content) ? 'rtl' : 'auto'}
-                >
-                    {message.role === 'system' && message.content.startsWith('Attached') ? (
-                        <span>{message.content}</span>
-                    ) : (
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                    )}
-                </div>
-
-                {/* Retry button for error messages */}
-                {message.isError && onRetry && (
-                    <button
-                        onClick={onRetry}
-                        className="mt-3 flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 rounded-lg shadow-md hover:shadow-lg transition-all"
-                    >
-                        <RefreshCw size={14} />
-                        Retry
-                    </button>
-                )}
-            </div>
+    if (isSystem) {
+      return (
+        <div className={`flex justify-center animate-message-in ${marginClass}`}>
+          <div className="max-w-md px-4 py-2 rounded-full app-surface-subtle text-sm app-text text-center">
+            {message.content?.startsWith(t('chat.systemMessageAttachment')) ? (
+              <span className="flex items-center gap-2 justify-center">
+                <Paperclip size={13} />
+                {message.content}
+              </span>
+            ) : (
+              message.content
+            )}
+          </div>
         </div>
+      );
+    }
+
+    const groupMarginClass = isFirst ? 'mt-0' : isGrouped ? 'mt-1' : 'mt-6';
+
+    return (
+      <div className={`flex gap-3 animate-message-in ${groupMarginClass} ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
+        {isGrouped ? (
+          <div className="w-9 shrink-0" />
+        ) : isUser ? (
+          <div className="w-9 h-9 rounded-full btn-primary flex items-center justify-center text-white font-semibold text-xs shrink-0 mt-1">
+            {userInitial || 'U'}
+          </div>
+        ) : (
+          <div
+            className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 mt-1 ${
+              message.isError ? 'status-danger' : 'btn-primary'
+            }`}
+          >
+            {message.isError ? (
+              <span className="text-xs font-bold">!</span>
+            ) : (
+              <span className="text-white font-bold text-xs">Q</span>
+            )}
+          </div>
+        )}
+
+        <div
+          className={`relative group flex-1 px-5 py-4 ${
+            message.isError
+              ? 'status-danger rounded-2xl'
+              : isUser
+                ? 'rounded-2xl bubble-user'
+                : 'bubble-assistant rounded-2xl'
+          }`}
+        >
+          <button
+            onClick={() => onCopy(message.content || message.attachment_name || '', index)}
+            className={`absolute top-2.5 ${contentDirection === 'rtl' ? 'right-2.5' : 'left-2.5'} p-1.5 rounded-lg transition-all sm:opacity-0 sm:group-hover:opacity-100 focus-ring ${
+              copiedIdx === index
+                ? isUser
+                  ? 'status-info opacity-100'
+                  : 'status-success opacity-100'
+                : 'btn-ghost opacity-60'
+            }`}
+            title={t('chat.copyToClipboard')}
+            aria-label={t('chat.copyMessage')}
+          >
+            {copiedIdx === index ? <Check size={14} /> : <Copy size={14} />}
+          </button>
+
+          {message.attachment_name && (
+            <div
+              className={`flex items-center gap-2 font-medium ${
+                isUser ? 'text-blue-900 dark:text-white/90' : 'app-text'
+              }${message.content ? ' mb-3 pb-2 border-b app-border' : ''}`}
+            >
+              <div className={`p-1.5 rounded-md ${isUser ? 'bg-blue-200/50 dark:bg-white/15' : 'app-surface-subtle'}`}>
+                <Paperclip size={13} />
+              </div>
+              <span className="text-sm break-words" dir="auto">{message.attachment_name}</span>
+            </div>
+          )}
+
+          {message.content ? (
+            <div
+              className={`prose max-w-none prose-p:leading-relaxed prose-pre:rounded-xl ${
+                isUser ? userProseClasses : assistantProseClasses
+              } ${contentDirection === 'rtl' ? 'text-right' : 'text-left'} ${isStreaming ? 'streaming-cursor' : ''}`}
+              dir={contentDirection}
+            >
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  code: ({ className, children, ...props }) => (
+                    <code className={className} dir="ltr" {...props}>
+                      {children}
+                    </code>
+                  ),
+                  pre: ({ children, ...props }) => (
+                    <pre dir="ltr" {...props}>
+                      {children}
+                    </pre>
+                  )
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
+            </div>
+          ) : isStreaming && isAssistant ? (
+            <div className="flex items-center gap-3 py-1">
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-[var(--accent-500)] animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-2 h-2 rounded-full bg-[var(--accent-500)] animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-2 h-2 rounded-full bg-[var(--accent-500)] animate-bounce" />
+              </div>
+              <span className="text-sm app-muted animate-pulse">{thinkingText}</span>
+            </div>
+          ) : null}
+
+          {message.isError && onRetry && (
+            <button
+              onClick={onRetry}
+              className="mt-3 flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg btn-primary focus-ring"
+              aria-label={t('common.retry')}
+            >
+              <RefreshCw size={14} />
+              {t('common.retry')}
+            </button>
+          )}
+        </div>
+      </div>
     );
-};
+  }
+);
+
+ChatBubble.displayName = 'ChatBubble';
 
 export default ChatBubble;

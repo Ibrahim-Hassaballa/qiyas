@@ -10,13 +10,27 @@ from Backend.Source.Core.Logging import logger
 
 # Constants
 DATA_DIR = Path("Backend/Data")
-SETTINGS_FILE = DATA_DIR / "settings.json"
+SETTINGS_DIR = DATA_DIR / "tenant_settings"
+
+# Ensure directories exist
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Legacy settings file path
+LEGACY_SETTINGS_FILE = DATA_DIR / "settings.json"
 
 class SettingsModel(BaseModel):
     """
     Pydantic model for application settings.
     Defines the schema and validation rules.
     """
+    context_memory_enabled: bool = True
+    model_provider: str = Field(default="azure", description="AI model provider: 'azure' or 'groq'")
+    groq_model: str = Field(default="", description="Groq model name, e.g. 'openai/gpt-oss-120b'")
+    topic_guard_prompt: str = Field(
+        default="أنت مصنف أسئلة. حدد هل السؤال يتعلق بأي من المواضيع التالية:\n- قياس أو معايير قياس\n- هيئة الحكومة الرقمية (DGA)\n- التحول الرقمي الحكومي\n- الامتثال أو الضوابط أو المحاور أو المعايير الحكومية\n- البنية المؤسسية أو إدارة المخاطر أو استمرارية الأعمال أو إدارة المشاريع الرقمية\n- الحوسبة السحابية أو البيانات والذكاء الاصطناعي في سياق حكومي\n\nقاعدة مهمة: أي سؤال يحتوي على رقم معيار أو ضابط (مثل 3.1.3 أو 5.2.1 أو 5.17) يعتبر دائماً on_topic: true حتى لو كان مكتوباً بالعامية.\n\nقاعدة المحادثة: ستصلك أحياناً رسائل سابقة من المحادثة. إذا كانت المحادثة السابقة تتعلق بالمواضيع أعلاه، فإن أسئلة المتابعة (مثل \"وضح أكثر\" أو \"جيبلي الدليل\" أو \"بايش استدليت\" أو \"ايش تقصد\") تعتبر on_topic: true لأنها تكمل محادثة قائمة. لكن إذا غيّر المستخدم الموضوع بشكل واضح (مثل سؤال عن الطقس بعد سؤال عن معيار) فأجب on_topic: false.\n\nإذا كان السؤال يتعلق بأي من هذه المواضيع أجب on_topic: true.\nإذا كان السؤال عن موضوع آخر تماماً (طقس، برمجة، رياضيات، ثقافة عامة، محادثة عادية) أجب on_topic: false.",
+        description="System prompt for the Groq topic guard classifier."
+    )
     system_prompt: str = Field(
         default="""أنت مساعد امتثال/تفسير رسمي لمعايير هيئة الحكومة الرقمية (DGA) من وثيقة:
 "المعايير الأساسية للتحول الرقمي" إصدار 4.0 (مارس 2025).
@@ -60,12 +74,9 @@ class SettingsService:
     _lock = Lock()
     
     def __init__(self):
-        self._settings = None
-        # Ensure Data directory exists
-        if not DATA_DIR.exists():
-            DATA_DIR.mkdir(parents=True, exist_ok=True)
-            
-        self._load_settings()
+        self._default_settings = None
+        self._tenant_settings_cache = {}
+        self._load_default_settings()
 
     @classmethod
     def get_instance(cls):
@@ -75,43 +86,73 @@ class SettingsService:
                     cls._instance = cls()
         return cls._instance
 
-    def _load_settings(self):
-        """Loads settings from disk or creates default if missing."""
-        if not SETTINGS_FILE.exists():
-            logger.info("Settings file not found. Creating default settings.")
-            self._settings = SettingsModel()
-            self.save_settings(self._settings)
-        else:
+    def _get_tenant_settings_path(self, tenant_id: str) -> Path:
+        """Get the settings file path for a specific tenant."""
+        return SETTINGS_DIR / f"{tenant_id}.json"
+
+    def _load_default_settings(self):
+        """Load default settings from legacy file or create defaults."""
+        if LEGACY_SETTINGS_FILE.exists():
             try:
-                with open(SETTINGS_FILE, 'r', encoding='utf-8') as f:
+                with open(LEGACY_SETTINGS_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    self._settings = SettingsModel(**data)
+                    self._default_settings = SettingsModel(**data)
             except Exception as e:
-                logger.warning(f"Error loading settings: {e}. Reverting to defaults.")
-                self._settings = SettingsModel()
+                logger.warning(f"Error loading legacy settings: {e}. Using defaults.")
+                self._default_settings = SettingsModel()
+        else:
+            self._default_settings = SettingsModel()
 
-    def get_settings(self) -> SettingsModel:
-        """Returns the current settings object."""
-        return self._settings
+    def get_settings(self, tenant_id: str = None) -> SettingsModel:
+        """
+        Get settings for a specific tenant.
+        Falls back to default settings if no tenant-specific settings exist.
+        """
+        if not tenant_id:
+            return self._default_settings
 
-    def save_settings(self, new_settings: SettingsModel):
+        # Check cache first
+        if tenant_id in self._tenant_settings_cache:
+            return self._tenant_settings_cache[tenant_id]
+
+        # Try loading from disk
+        settings_path = self._get_tenant_settings_path(tenant_id)
+        if settings_path.exists():
+            try:
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    tenant_settings = SettingsModel(**data)
+                    self._tenant_settings_cache[tenant_id] = tenant_settings
+                    return tenant_settings
+            except Exception as e:
+                logger.warning(f"Error loading settings for tenant {tenant_id}: {e}. Using defaults.")
+
+        # Return default settings (inherited from global)
+        return self._default_settings
+
+    def save_settings(self, new_settings: SettingsModel, tenant_id: str = None):
         """
-        Saves settings to disk using atomic write.
-        1. Write to temp file
-        2. Replace actual file
+        Save settings. If tenant_id is provided, saves tenant-specific settings.
+        Otherwise, saves global defaults.
         """
-        self._settings = new_settings
+        if tenant_id:
+            self._tenant_settings_cache[tenant_id] = new_settings
+            settings_path = self._get_tenant_settings_path(tenant_id)
+        else:
+            self._default_settings = new_settings
+            settings_path = LEGACY_SETTINGS_FILE
         
         # Atomic Write Strategy
         try:
-            # Create a temporary file in the same directory
-            with tempfile.NamedTemporaryFile('w', dir=DATA_DIR, delete=False, encoding='utf-8') as tmp_file:
+            target_dir = settings_path.parent
+            target_dir.mkdir(parents=True, exist_ok=True)
+            
+            with tempfile.NamedTemporaryFile('w', dir=target_dir, delete=False, encoding='utf-8') as tmp_file:
                 json.dump(new_settings.model_dump(), tmp_file, ensure_ascii=False, indent=4)
                 temp_path = tmp_file.name
             
-            # Atomic move (replace)
-            shutil.move(temp_path, SETTINGS_FILE)
-            logger.info("Settings saved successfully")
+            shutil.move(temp_path, settings_path)
+            logger.info(f"Settings saved successfully" + (f" for tenant {tenant_id}" if tenant_id else ""))
 
         except Exception as e:
             logger.error(f"Failed to save settings: {e}", exc_info=True)

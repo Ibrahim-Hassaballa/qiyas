@@ -1,5 +1,6 @@
 from openai import AzureOpenAI, AsyncAzureOpenAI
 from openai.types.chat import ChatCompletion
+from groq import AsyncGroq
 from Backend.Source.Core.Config.Config import settings
 from Backend.Source.Core.Logging import logger
 from typing import Dict, List, Optional, Any, Union
@@ -152,23 +153,19 @@ class AzureOpenAIService:
 
         return self._standard_embeddings
 
-    async def get_chat_response(self, messages: List[Dict[str, str]], stream: bool = True) -> Any:
+    async def get_chat_response(self, messages: List[Dict[str, str]], stream: bool = True, model_name: Optional[str] = None) -> Any:
         """
         Sends messages to Azure OpenAI and returns the response.
-        Supports streaming.
-
-        Args:
-            messages: List of message dicts with 'role' and 'content' keys
-            stream: Whether to stream the response
-
-        Returns:
-            Async stream or ChatCompletion depending on stream parameter
+        Supports streaming. model_name is ignored for Azure (uses deployment from .env).
         """
-        response = await self.client.chat.completions.create(
+        kwargs = dict(
             model=self.deployment_name,
             messages=messages,
-            stream=stream
+            stream=stream,
         )
+        if stream:
+            kwargs["stream_options"] = {"include_usage": True}
+        response = await self.client.chat.completions.create(**kwargs)
         return response
 
     async def get_embedding(self, text: str) -> List[float]:
@@ -349,4 +346,57 @@ class AzureOpenAIService:
         except Exception as e:
             return {"standard_id": None, "confidence": "low", "reasoning": f"LLM analysis error: {str(e)}", "tier": 3}
 
+class GroqAIService:
+    """Groq LLM service for chat completions (streaming supported)."""
+
+    def __init__(self):
+        if not settings.GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY is not set in environment variables")
+        self.client = AsyncGroq(api_key=settings.GROQ_API_KEY)
+        self.model = settings.GROQ_MODEL
+        logger.info(f"GroqAIService initialized with model: {self.model}")
+
+    async def get_chat_response(self, messages: List[Dict[str, str]], stream: bool = True, model_name: Optional[str] = None) -> Any:
+        """
+        Sends messages to Groq and returns the response.
+        Supports streaming. model_name overrides the default model if provided.
+        """
+        model = model_name or self.model
+        logger.info(f"Groq request using model: {model}")
+        kwargs = dict(
+            model=model,
+            messages=messages,
+            stream=stream,
+        )
+        response = await self.client.chat.completions.create(**kwargs)
+        return response
+
+
+# --- Service Instances ---
 ai_service = AzureOpenAIService()
+
+# Groq service initialized lazily (only if key is configured)
+_groq_service: Optional[GroqAIService] = None
+
+
+def get_ai_service(provider: str = "azure") -> Any:
+    """
+    Returns the appropriate AI service based on the provider name.
+
+    Args:
+        provider: "azure" or "groq"
+
+    Returns:
+        An AI service instance with get_chat_response method
+    """
+    global _groq_service
+
+    if provider == "groq":
+        if not settings.GROQ_API_KEY:
+            logger.warning("Groq requested but GROQ_API_KEY not set. Falling back to Azure.")
+            return ai_service
+        if _groq_service is None:
+            _groq_service = GroqAIService()
+        return _groq_service
+
+    return ai_service
